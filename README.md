@@ -96,9 +96,11 @@ treat a score as a reason to reread a draft. It is not proof of who wrote it.
 ### What is checked
 
 Directories are walked in sorted order for `.md`, `.markdown`, `.mdx` and `.txt` files,
-skipping hidden directories, `target/` and `node_modules/`. Files named on the command line
-are checked whatever their extension. `.txt` files are plain text; everything else, stdin
-included, is Markdown.
+respecting `.gitignore` rules in the directory and its parents, including nested overrides.
+This works outside Git repositories too. Hidden directories, `target/` and `node_modules/`
+are always skipped during a walk. Files named on the command line are checked whatever their
+extension or ignore status. `.txt` files are plain text; everything else, stdin included,
+is Markdown.
 
 In Markdown, tics ignores fenced and indented code blocks, inline code, autolinks, bare URLs,
 link destinations, HTML (including comments), YAML or TOML front matter at the top of the

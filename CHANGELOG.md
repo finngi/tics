@@ -32,6 +32,8 @@ Rule ids are stable; a rule's `since` version is the release that added it.
 
 ### Changed
 
+- Directory walks respect parent and nested `.gitignore` files. Explicit file arguments
+  still scan ignored files.
 - The one-line-per-finding output is now `--format compact` (`--format human` still works)
   and is the default when output is piped. Each line ends with `(confidence N)`, and JSON
   findings gain a `confidence` field.

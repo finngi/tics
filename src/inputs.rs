@@ -4,6 +4,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use ignore::WalkBuilder;
 
 use crate::document::Mode;
 
@@ -17,7 +18,8 @@ pub(crate) enum Input {
 }
 
 /// Expands `paths`: `-` or no paths is stdin, directories are walked recursively (sorted,
-/// skipping hidden directories, `target/` and `node_modules/`), files are taken as given.
+/// respecting `.gitignore` and skipping hidden directories, `target/` and `node_modules/`),
+/// files are taken as given.
 pub(crate) fn collect(paths: &[PathBuf]) -> Result<Vec<Input>> {
     if paths.is_empty() {
         return Ok(vec![Input::Stdin]);
@@ -42,26 +44,30 @@ pub(crate) fn collect(paths: &[PathBuf]) -> Result<Vec<Input>> {
 }
 
 fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    let mut entries = std::fs::read_dir(dir)
-        .with_context(|| format!("reading directory {}", dir.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("reading directory {}", dir.display()))?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        // `file_type` does not follow symlinks, so symlinked directories are not walked
-        // (no cycles); a symlink to a file is followed by `metadata`.
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("reading {}", path.display()))?;
-        if file_type.is_dir() {
-            if !name.starts_with('.') && !SKIPPED_DIRS.contains(&name.as_ref()) {
-                walk(&path, files)?;
+    let mut walker = WalkBuilder::new(dir);
+    walker
+        .standard_filters(false)
+        .parents(true)
+        .git_ignore(true)
+        .require_git(false)
+        .follow_links(false)
+        .sort_by_file_name(Ord::cmp)
+        .filter_entry(|entry| {
+            if !entry.file_type().is_some_and(|kind| kind.is_dir()) {
+                return true;
             }
-        } else if has_prose_extension(&path) && path.is_file() {
-            files.push(path);
+            let name = entry.file_name().to_string_lossy();
+            !name.starts_with('.') && !SKIPPED_DIRS.contains(&name.as_ref())
+        });
+    for entry in walker.build() {
+        let entry = entry.with_context(|| format!("walking directory {}", dir.display()))?;
+        if let Some(error) = entry.error() {
+            return Err(error.clone()).context("reading .gitignore rules");
+        }
+        let path = entry.path();
+        // Directory symlinks are not followed; file symlinks still count as files.
+        if has_prose_extension(path) && path.is_file() {
+            files.push(entry.into_path());
         }
     }
     Ok(())

@@ -301,6 +301,26 @@ fn fresh_dir(name: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
+fn scanned_paths(root: &Path) -> Result<Vec<PathBuf>> {
+    let output = tics(&["score", "--json", root.to_str().context("UTF-8 temp dir")?])?;
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reports: Value = serde_json::from_str(&stdout(&output)?)?;
+    reports
+        .as_array()
+        .context("score reports")?
+        .iter()
+        .map(|report| {
+            let path = Path::new(report["path"].as_str().context("score path")?);
+            Ok(path.strip_prefix(root)?.to_path_buf())
+        })
+        .collect()
+}
+
 #[test]
 fn directories_are_walked_in_order_skipping_hidden_target_and_node_modules() -> Result<()> {
     let root = fresh_dir("walk")?;
@@ -309,6 +329,7 @@ fn directories_are_walked_in_order_skipping_hidden_target_and_node_modules() -> 
         "a.md",
         "c.mdx",
         "d.txt",
+        ".draft.md",
         "skip.rs",
         ".hidden/x.md",
         "target/x.md",
@@ -323,7 +344,124 @@ fn directories_are_walked_in_order_skipping_hidden_target_and_node_modules() -> 
         .filter_map(|line| line.split(':').next())
         .filter_map(|path| path.strip_prefix(root_arg))
         .collect();
-    assert_eq!(files, ["/a.md", "/b/two.markdown", "/c.mdx", "/d.txt"]);
+    assert_eq!(
+        files,
+        ["/.draft.md", "/a.md", "/b/two.markdown", "/c.mdx", "/d.txt"]
+    );
+    Ok(())
+}
+
+#[test]
+fn gitignore_patterns_and_nested_overrides_filter_directory_walks() -> Result<()> {
+    let root = fresh_dir("gitignore-patterns")?;
+    write(
+        &root.join(".gitignore"),
+        "/root-only.md\n**/*.generated.md\n*.txt\n!keep.txt\nbook/\nblocked/\n!blocked/keep.md\n\\#draft.md\n\\!draft.md\n",
+    )?;
+    write(
+        &root.join("docs/.gitignore"),
+        "!keep.generated.md\nlocal.md\n",
+    )?;
+    for name in [
+        "z.md",
+        "a.md",
+        "docs/guide.md",
+        "docs/root-only.md",
+        "docs/keep.generated.md",
+        "keep.txt",
+        "drop.txt",
+        "root-only.md",
+        "draft.generated.md",
+        "docs/drop.generated.md",
+        "docs/local.md",
+        "blocked/keep.md",
+        "#draft.md",
+        "!draft.md",
+    ] {
+        write(&root.join(name), "The cache is empty.\n")?;
+    }
+    // An ignored generated directory is pruned before any files are read.
+    std::fs::create_dir_all(root.join("docs/book"))?;
+    std::fs::write(root.join("docs/book/index.md"), [0xff])?;
+    assert_eq!(
+        scanned_paths(&root)?,
+        [
+            "a.md",
+            "docs/guide.md",
+            "docs/keep.generated.md",
+            "docs/root-only.md",
+            "keep.txt",
+            "z.md",
+        ]
+        .map(PathBuf::from)
+    );
+    Ok(())
+}
+
+#[test]
+fn parent_gitignore_applies_to_relative_directory_arguments() -> Result<()> {
+    let root = fresh_dir("gitignore-parent")?;
+    write(&root.join(".gitignore"), "/docs/book/\n*.generated.md\n")?;
+    for name in [
+        "docs/book/index.md",
+        "docs/draft.generated.md",
+        "docs/guide.md",
+    ] {
+        write(&root.join(name), "The cache is empty.\n")?;
+    }
+    let relative = root
+        .join("docs")
+        .strip_prefix(env!("CARGO_MANIFEST_DIR"))?
+        .to_path_buf();
+    assert_eq!(scanned_paths(&relative)?, [PathBuf::from("guide.md")]);
+    Ok(())
+}
+
+#[test]
+fn gitignore_negations_do_not_restore_hard_skipped_directories() -> Result<()> {
+    let root = fresh_dir("gitignore-hard-skips")?;
+    write(&root.join(".gitignore"), "!**/\n!**/*.md\n")?;
+    for name in ["a.md", ".hidden/x.md", "target/x.md", "node_modules/x.md"] {
+        write(&root.join(name), "The cache is empty.\n")?;
+    }
+    assert_eq!(scanned_paths(&root)?, [PathBuf::from("a.md")]);
+    Ok(())
+}
+
+#[test]
+fn explicitly_named_ignored_files_and_skipped_directories_are_scanned() -> Result<()> {
+    let root = fresh_dir("gitignore-explicit")?;
+    write(&root.join(".gitignore"), "*\n")?;
+    for name in [
+        "draft.custom",
+        ".hidden/a.md",
+        "target/a.md",
+        "node_modules/a.md",
+    ] {
+        write(&root.join(name), "We delve.\n")?;
+    }
+    let file = root.join("draft.custom");
+    let output = tics(&["--select", "ai-vocabulary", file.to_str().context("UTF-8")?])?;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout(&output)?.starts_with(&format!("{}:1:4:", file.display())));
+    // Naming a directory bypasses its hard skip; its own ignore rules still apply.
+    write(&root.join(".gitignore"), "")?;
+    for name in [".hidden", "target", "node_modules"] {
+        assert_eq!(scanned_paths(&root.join(name))?, [PathBuf::from("a.md")]);
+    }
+    Ok(())
+}
+
+#[test]
+fn only_gitignore_files_add_new_directory_filters() -> Result<()> {
+    let root = fresh_dir("gitignore-scope")?;
+    write(&root.join(".ignore"), "a.md\n")?;
+    write(&root.join(".git/info/exclude"), "b.md\n")?;
+    write(&root.join(".gitignore"), "c.md\n")?;
+    for name in ["a.md", "b.md", "c.md"] {
+        write(&root.join(name), "The cache is empty.\n")?;
+    }
+    assert_eq!(scanned_paths(&root)?, ["a.md", "b.md"].map(PathBuf::from));
     Ok(())
 }
 

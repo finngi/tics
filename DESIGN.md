@@ -15,7 +15,7 @@ rules.rs     the rule table (data) and the two non-regex heuristics
 ## Dependencies
 
 Versions checked with `cargo info` against crates.io on 2026-10-29; APIs read in
-`~/.cargo/registry/src`. 33 crates in the normal dependency tree, most of them clap's and
+`~/.cargo/registry/src`. 42 crates in the normal dependency tree, most of them clap's and
 serde's proc-macro stack.
 
 | Crate | Version | Why |
@@ -25,9 +25,13 @@ serde's proc-macro stack.
 | `clap` | 4.6.7, `derive` | Argument parsing, `--help`/`--version`, exit code 2 on usage errors, value enums for `--format`/`--severity`. |
 | `serde` + `serde_json` | 1.0.229 / 1.0.154 | Correct JSON escaping for `--format json`; derive keeps output structs and JSON in sync. clap already brings the proc-macro stack, so the extra build cost is small. |
 | `anyhow` | 1.0.104 | Application error chains with context (`reading docs/a.md as UTF-8: …`). |
+| `ignore` | 0.4.25 | Directory walking with Git's glob and negation rules, parent `.gitignore` files and nested overrides. Keeps that parsing out of the CLI. |
 
-Considered and not used: `walkdir`/`ignore` (a sorted `read_dir` recursion is 25 lines and the
-skip rules are three names), `once_cell`/`LazyLock` (rules are compiled once per run in
+The walker enables only `.gitignore` rules, even outside Git repositories. It keeps the
+existing hidden and build-directory skips, includes hidden files, and does not follow
+directory symlinks. Files named explicitly bypass ignore rules.
+
+Considered and not used: `once_cell`/`LazyLock` (rules are compiled once per run in
 `run()` and passed by reference, so no global and no `expect`), `assert_cmd`/`tempfile`
 (end-to-end tests use `CARGO_BIN_EXE_tics` and `CARGO_TARGET_TMPDIR`).
 
