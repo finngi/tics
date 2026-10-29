@@ -25,10 +25,15 @@ Rule ids are stable; a rule's `since` version is the release that added it.
   and `stock-section-label` (`Why it matters`, `How it works`, `Short answer:`, `TL;DR`).
 - `calibration/`: scripts that build the corpus and fit the model, with their reports.
 
+- Readable terminal output (`--format pretty`, the default in a terminal): findings grouped
+  by file, each with its line, the match underlined, a confidence and a one-line fix.
+  `--color auto|always|never` respects `NO_COLOR`.
+
 ### Changed
 
-- Human output ends each finding with `(confidence N)`. JSON findings gain a `confidence`
-  field.
+- The one-line-per-finding output is now `--format compact` (`--format human` still works)
+  and is the default when output is piped. Each line ends with `(confidence N)`, and JSON
+  findings gain a `confidence` field.
 
 ## [0.1.0] - 2026-10-29
 

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::engine::{FileReport, Finding, Section};
-use crate::rules::{Category, Rule, Severity};
+use crate::rules::{self, Category, Rule, Severity};
 use crate::score::{self, Unit, Units};
 
 #[derive(Debug, Serialize)]
@@ -152,7 +152,7 @@ pub(crate) fn rules_json(rules: &[Rule]) -> Result<String> {
 mod tests {
     use anyhow::Result;
 
-    use super::{Summary, density, human, json, scores_human, scores_json};
+    use super::{Style, Summary, density, human, json, pretty, scores_human, scores_json, window};
     use crate::engine::{FileReport, Finding};
     use crate::rules::{Category, Severity};
     use crate::score::Units;
@@ -169,6 +169,9 @@ mod tests {
             message: "possible AI-writing tic: em dash in prose".into(),
             matched: "—".into(),
             confidence: 0.56,
+            context: "Fast — and small.".into(),
+            context_column: 5,
+            width: 1,
         }
     }
 
@@ -253,6 +256,238 @@ mod tests {
         assert_eq!(value[0]["rules"]["em-dash"], 1);
         Ok(())
     }
+
+    #[test]
+    fn pretty_shows_the_line_the_match_and_a_hint() {
+        let reports = vec![("a.md".to_owned(), report(&["em-dash"]))];
+        let style = Style {
+            color: false,
+            width: 100,
+        };
+        let text = pretty(&reports, None, &style);
+        assert!(
+            text.starts_with("a.md  1 finding · AI-style score 0.87\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n  2:5      Em dash in prose   56%\n"),
+            "{text}"
+        );
+        assert!(text.contains("│ Fast — and small.\n"), "{text}");
+        assert!(text.contains("│      ^\n"), "{text}");
+        assert!(
+            text.contains("╰ Use a comma, colon, parentheses or a new sentence.  em-dash"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n● 1 possible tic in 1 of 1 file (120 words)\n"),
+            "{text}"
+        );
+        assert!(!text.contains('\x1b'), "no colour codes when colour is off");
+    }
+
+    #[test]
+    fn pretty_says_so_when_nothing_is_found() {
+        let reports = vec![("a.md".to_owned(), report(&[]))];
+        let style = Style {
+            color: false,
+            width: 100,
+        };
+        assert_eq!(
+            pretty(&reports, None, &style),
+            "✓ No tics found in 1 file (120 words).\n"
+        );
+    }
+
+    #[test]
+    fn long_lines_are_windowed_around_the_match() {
+        let line = format!("{}target{}", "a".repeat(200), "b".repeat(200));
+        let (text, offset, length) = window(&line, 200, 6, 60);
+        assert!(text.starts_with('…') && text.ends_with('…'), "{text}");
+        assert!(text.chars().count() <= 62);
+        let shown: String = text.chars().skip(offset).take(length).collect();
+        assert_eq!(shown, "target");
+        let (text, offset, length) = window("short line", 6, 4, 60);
+        assert_eq!((text.as_str(), offset, length), ("short line", 6, 4));
+    }
+}
+
+/// How pretty output is drawn: colour on or off, and the terminal width in columns.
+pub(crate) struct Style {
+    pub(crate) color: bool,
+    pub(crate) width: usize,
+}
+
+impl Style {
+    /// Wraps `text` in an ANSI SGR code when colour is on.
+    fn paint(&self, code: &str, text: &str) -> String {
+        if self.color {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_owned()
+        }
+    }
+
+    fn confidence(&self, confidence: f64) -> String {
+        let text = format!("{:>3.0}%", confidence * 100.0);
+        let code = if confidence >= 0.8 {
+            "1;31"
+        } else if confidence >= 0.5 {
+            "33"
+        } else {
+            "2"
+        };
+        self.paint(code, &text)
+    }
+}
+
+/// Findings grouped by file for a person at a terminal: each with its line, the match
+/// underlined, the confidence and a one-line fix, then a short summary.
+pub(crate) fn pretty(
+    reports: &[(String, FileReport)],
+    summary: Option<&Summary>,
+    style: &Style,
+) -> String {
+    let mut out = String::new();
+    let mut total = 0;
+    let mut flagged = 0;
+    for (path, report) in reports {
+        if report.findings.is_empty() {
+            continue;
+        }
+        total += report.findings.len();
+        flagged += 1;
+        let count = report.findings.len();
+        let noun = if count == 1 { "finding" } else { "findings" };
+        let _ = writeln!(
+            out,
+            "{}  {}",
+            style.paint("1;4", path),
+            style.paint(
+                "2",
+                &format!("{count} {noun} · AI-style score {}", shown(report.score))
+            )
+        );
+        for finding in &report.findings {
+            render_finding(&mut out, finding, style);
+        }
+    }
+    let files = reports.len();
+    let words: usize = reports.iter().map(|(_, report)| report.words).sum();
+    let plural = |n: usize, one: &str, many: &str| {
+        if n == 1 {
+            one.to_owned()
+        } else {
+            many.to_owned()
+        }
+    };
+    if total == 0 {
+        let _ = writeln!(
+            out,
+            "{} No tics found in {files} {} ({words} words).",
+            style.paint("32", "✓"),
+            plural(files, "file", "files")
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "\n{} {total} {} in {flagged} of {files} {} ({words} words)",
+            style.paint("33", "●"),
+            plural(total, "possible tic", "possible tics"),
+            plural(files, "file", "files"),
+        );
+        let _ = writeln!(
+            out,
+            "  {}",
+            style.paint(
+                "2",
+                "% = how strongly that pattern, at its rate in the file, points to AI-styled text"
+            )
+        );
+    }
+    if let Some(summary) = summary {
+        let mut counts: Vec<(&&str, &usize)> = summary.rules.iter().collect();
+        counts.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let width = counts.iter().map(|(id, _)| id.len()).max().unwrap_or(0);
+        for (id, count) in counts {
+            let _ = writeln!(out, "  {id:<width$}  {count}");
+        }
+    }
+    out
+}
+
+fn render_finding(out: &mut String, finding: &Finding, style: &Style) {
+    let rule = rules::by_id(finding.rule);
+    // The description up to its examples: "em dash in prose", "appositive contrast".
+    let title = rule
+        .map_or(finding.message.as_str(), |rule| rule.description)
+        .split(" (`")
+        .next()
+        .unwrap_or_default();
+    let mut title_chars = title.chars();
+    let title: String = title_chars
+        .next()
+        .map(|first| first.to_uppercase().chain(title_chars).collect())
+        .unwrap_or_default();
+    let place = format!("{}:{}", finding.line, finding.column);
+    let _ = writeln!(
+        out,
+        "\n  {}  {}  {}",
+        style.paint("36", &format!("{place:<7}")),
+        style.paint("1", &title),
+        style.confidence(finding.confidence)
+    );
+    let (text, offset, length) = window(
+        &finding.context,
+        finding.context_column,
+        finding.width,
+        style.width.saturating_sub(13).max(40),
+    );
+    let bar = style.paint("2", "│");
+    let _ = writeln!(out, "           {bar} {text}");
+    let marks = format!("{}{}", " ".repeat(offset), "^".repeat(length));
+    let _ = writeln!(out, "           {bar} {}", style.paint("31", &marks));
+    if let Some(rule) = rule {
+        let _ = writeln!(
+            out,
+            "           {} {}  {}",
+            style.paint("2", "╰"),
+            rule.hint,
+            style.paint("2", rule.id)
+        );
+    }
+}
+
+/// The part of `line` to show in `room` columns around the hit at char `start` (`length` chars
+/// long): the text, and where the underline starts and how long it is. Long lines are cut with
+/// `…` on the side that is dropped.
+fn window(line: &str, start: usize, length: usize, room: usize) -> (String, usize, usize) {
+    let chars: Vec<char> = line
+        .chars()
+        .map(|c| if c == '\t' { ' ' } else { c })
+        .collect();
+    let start = start.min(chars.len());
+    if chars.len() <= room {
+        let length = length.clamp(1, chars.len().saturating_sub(start).max(1));
+        return (chars.iter().collect(), start, length);
+    }
+    let room = room.saturating_sub(2);
+    let first = start
+        .saturating_sub(room / 3)
+        .min(chars.len().saturating_sub(room));
+    let last = (first + room).min(chars.len());
+    let mut text = String::new();
+    let mut offset = start - first;
+    if first > 0 {
+        text.push('…');
+        offset += 1;
+    }
+    text.extend(&chars[first..last]);
+    if last < chars.len() {
+        text.push('…');
+    }
+    let length = length.clamp(1, last.saturating_sub(start).max(1));
+    (text, offset, length)
 }
 
 /// A score to two decimals, or `n/a` for a file or section with no prose.

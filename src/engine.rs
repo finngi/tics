@@ -27,6 +27,16 @@ pub(crate) struct Finding {
     pub(crate) matched: String,
     /// How strongly this rule's hits in this file suggest AI-style text (0 to 1).
     pub(crate) confidence: f64,
+    /// Up to `CONTEXT_CHARS` characters of the hit's line either side of it, with `…` where
+    /// the line is cut, for the terminal display.
+    #[serde(skip)]
+    pub(crate) context: String,
+    /// Where the hit starts in `context`, in characters.
+    #[serde(skip)]
+    pub(crate) context_column: usize,
+    /// How many characters of the line the hit covers.
+    #[serde(skip)]
+    pub(crate) width: usize,
 }
 
 /// The result of scanning one file.
@@ -175,6 +185,7 @@ pub(crate) fn scan(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> 
             continue;
         }
         kept.push((rule, span.start));
+        let context = line_context(source, &lines, line, span.start);
         findings.push(Finding {
             path: path.to_owned(),
             line,
@@ -183,8 +194,16 @@ pub(crate) fn scan(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> 
             category: rule.category,
             severity: rule.severity,
             message: format!("possible AI-writing tic: {}", rule.description),
-            matched: excerpt(source.get(span).unwrap_or_default()),
+            matched: excerpt(source.get(span.clone()).unwrap_or_default()),
             confidence: 0.0,
+            context: context.0,
+            context_column: context.1,
+            width: source
+                .get(span)
+                .unwrap_or_default()
+                .split('\n')
+                .next()
+                .map_or(1, |first| first.chars().count().max(1)),
         });
     }
     findings.sort_by(|a, b| (a.line, a.column, a.rule).cmp(&(b.line, b.column, b.rule)));
@@ -503,6 +522,43 @@ fn is_suppressed(directives: &[Directive], lines: &LineIndex, rule: &str, line: 
 }
 
 /// Collapses whitespace and caps the length so one finding stays on one line.
+/// Characters of context kept either side of a hit; the terminal window is narrower.
+const CONTEXT_CHARS: usize = 160;
+
+/// The hit's line around byte `hit`, cut to `CONTEXT_CHARS` either side with `…`, and the
+/// hit's character offset in it. Work is bounded by the window, not the line, so a 1 MiB line
+/// with thousands of hits stays linear.
+fn line_context(source: &str, lines: &LineIndex, line: usize, hit: usize) -> (String, usize) {
+    let line_start = lines.start_of(line);
+    let line_end = lines
+        .starts
+        .get(line)
+        .map_or(source.len(), |next| next.saturating_sub(1));
+    let hit = hit.clamp(line_start, line_end);
+    let before = source.get(line_start..hit).unwrap_or_default();
+    let after = source.get(hit..line_end).unwrap_or_default();
+    let from = before
+        .char_indices()
+        .rev()
+        .nth(CONTEXT_CHARS - 1)
+        .map_or(0, |(index, _)| index);
+    let to = after
+        .char_indices()
+        .nth(CONTEXT_CHARS)
+        .map_or(after.len(), |(index, _)| index);
+    let mut text = String::new();
+    if from > 0 {
+        text.push('…');
+    }
+    text.push_str(&before[from..]);
+    let column = text.chars().count();
+    text.push_str(after[..to].trim_end_matches('\r'));
+    if to < after.len() {
+        text.push('…');
+    }
+    (text, column)
+}
+
 fn excerpt(text: &str) -> String {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= MATCHED_MAX_CHARS {

@@ -32,13 +32,26 @@ tics score docs/              # one 0-1 score per file (also `--format json`)
 tics rules                    # list the rules (also `--format json`)
 ```
 
-Output, one finding per line:
+In a terminal, findings are grouped by file. Each one shows its line with the match
+underlined, how strongly it points to AI-styled text, and a one-line fix:
+
+```text
+notes.md  2 findings · AI-style score 0.97
+
+  3:28     Appositive contrast   85%
+           │ It works. Use tabs, not spaces.
+           │                ^^^^^^^^^^^^
+           ╰ Keep the claim; cut ", not Y" unless readers would assume Y.  x-not-y
+```
+
+Piped into another program, or with `--format compact`, it prints one finding per line:
 
 ```text
 tests/fixtures/tics.md:11:48: x-not-y: possible AI-writing tic: appositive contrast (`X, not Y`) «, not inside the VM» (confidence 0.82)
 ```
 
-The column counts Unicode characters from 1. JSON output is an array of objects with `path`,
+Colour follows `--color auto|always|never`; `auto` turns it off for pipes and when `NO_COLOR`
+is set. The column counts Unicode characters from 1. JSON output is an array of objects with `path`,
 `line`, `column`, `rule`, `category`, `severity`, `message`, `matched` and `confidence`. With `--summary`,
 JSON output becomes an object `{"findings": [...], "summary": {...}}`.
 

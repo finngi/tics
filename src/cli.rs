@@ -19,9 +19,13 @@ pub(crate) struct Cli {
     #[arg(value_name = "PATH")]
     pub(crate) paths: Vec<PathBuf>,
 
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = Format::Human, global = true)]
-    pub(crate) format: Format,
+    /// Output format [default: pretty in a terminal, compact when piped].
+    #[arg(long, value_enum, global = true)]
+    pub(crate) format: Option<Format>,
+
+    /// When to colour pretty output (`auto` respects `NO_COLOR` and pipes).
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto, global = true)]
+    pub(crate) color: ColorChoice,
 
     /// Print per-rule counts, total, words scanned and hits per 1,000 words.
     #[arg(long)]
@@ -69,8 +73,19 @@ pub(crate) enum Command {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Format {
-    Human,
+    /// Findings grouped by file, with the line, the match underlined and a fix hint.
+    Pretty,
+    /// One line per finding, `path:line:col: rule: message «match» (confidence N)`.
+    #[value(alias = "human")]
+    Compact,
     Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ColorChoice {
+    Auto,
+    Always,
+    Never,
 }
 
 #[cfg(test)]
@@ -90,7 +105,7 @@ mod tests {
     fn defaults_read_stdin_in_human_format_at_info() -> Result<()> {
         let cli = Cli::try_parse_from(["tics"])?;
         assert!(cli.paths.is_empty() && cli.command.is_none() && !cli.summary);
-        assert_eq!((cli.format, cli.severity), (Format::Human, Severity::Info));
+        assert_eq!((cli.format, cli.severity), (None, Severity::Info));
         Ok(())
     }
 
@@ -106,7 +121,7 @@ mod tests {
     fn rules_subcommand_accepts_format_after_it() -> Result<()> {
         let cli = Cli::try_parse_from(["tics", "rules", "--format", "json"])?;
         assert!(matches!(cli.command, Some(Command::Rules)));
-        assert_eq!(cli.format, Format::Json);
+        assert_eq!(cli.format, Some(Format::Json));
         Ok(())
     }
 

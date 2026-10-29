@@ -1,6 +1,6 @@
 //! `tics`: flag possible AI-writing tics in Markdown and plain-text prose.
 
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
@@ -18,7 +18,7 @@ mod sentences;
 #[cfg(test)]
 mod rule_tests;
 
-use cli::{Cli, Command, Format};
+use cli::{Cli, ColorChoice, Command, Format};
 use rules::{RULES, Rule};
 
 /// Usage and IO errors; clap uses the same code for argument errors.
@@ -36,9 +36,15 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<ExitCode> {
+    let terminal = std::io::stdout().is_terminal();
+    let format = cli.format.unwrap_or(if terminal {
+        Format::Pretty
+    } else {
+        Format::Compact
+    });
     if matches!(cli.command, Some(Command::Rules)) {
-        let text = match cli.format {
-            Format::Human => output::rules_human(RULES),
+        let text = match format {
+            Format::Pretty | Format::Compact => output::rules_human(RULES),
             Format::Json => output::rules_json(RULES)?,
         };
         write_stdout(&text)?;
@@ -57,27 +63,40 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         reports.push((path, report));
     }
     if let Some(Command::Score { sections, .. }) = cli.command {
-        let text = match cli.format {
-            Format::Human => output::scores_human(&reports, sections),
+        let text = match format {
+            Format::Pretty | Format::Compact => output::scores_human(&reports, sections),
             Format::Json => output::scores_json(&reports)?,
         };
         write_stdout(&text)?;
         return Ok(ExitCode::SUCCESS);
     }
-    let mut findings = Vec::new();
-    let mut words = 0;
-    for (_, report) in reports {
-        words += report.words;
-        findings.extend(
-            report
-                .findings
-                .into_iter()
-                .filter(|finding| finding.confidence >= cli.min_confidence),
-        );
+    for (_, report) in &mut reports {
+        report
+            .findings
+            .retain(|finding| finding.confidence >= cli.min_confidence);
     }
+    let words = reports.iter().map(|(_, report)| report.words).sum();
+    let findings: Vec<_> = reports
+        .iter()
+        .flat_map(|(_, report)| report.findings.iter().cloned())
+        .collect();
     let summary = cli.summary.then(|| output::Summary::new(&findings, words));
-    let text = match cli.format {
-        Format::Human => output::human(&findings, summary.as_ref()),
+    let text = match format {
+        Format::Pretty => {
+            let style = output::Style {
+                color: match cli.color {
+                    ColorChoice::Always => true,
+                    ColorChoice::Never => false,
+                    ColorChoice::Auto => {
+                        terminal
+                            && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
+                    }
+                },
+                width: terminal_width(),
+            };
+            output::pretty(&reports, summary.as_ref(), &style)
+        }
+        Format::Compact => output::human(&findings, summary.as_ref()),
         Format::Json => output::json(&findings, summary.as_ref())?,
     };
     write_stdout(&text)?;
@@ -86,6 +105,14 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Columns available for pretty output: `COLUMNS` when set, else 100.
+fn terminal_width() -> usize {
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|columns| columns.parse().ok())
+        .unwrap_or(100)
 }
 
 /// Applies `--select`, `--ignore` and `--severity`; unknown ids are usage errors.
