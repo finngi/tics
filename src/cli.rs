@@ -38,12 +38,30 @@ pub(crate) struct Cli {
     /// Minimum severity to report.
     #[arg(long, value_enum, default_value_t = Severity::Info)]
     pub(crate) severity: Severity,
+
+    /// Only report findings at or above this confidence (0 to 1). A lone hit in a long file
+    /// scores low; many hits of the same kind score high.
+    #[arg(long, value_name = "N", default_value_t = 0.0, value_parser = parse_confidence, global = true)]
+    pub(crate) min_confidence: f64,
+}
+
+fn parse_confidence(text: &str) -> Result<f64, String> {
+    match text.parse::<f64>() {
+        Ok(value) if (0.0..=1.0).contains(&value) => Ok(value),
+        _ => Err(format!("`{text}` is not a number from 0 to 1")),
+    }
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// List the rules with id, category, severity, since, source and description.
     Rules,
+    /// Score each file from 0 to 1 for how AI-styled its tics make it look.
+    Score {
+        /// Files or directories to score; `-` or none reads stdin.
+        #[arg(value_name = "PATH")]
+        paths: Vec<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

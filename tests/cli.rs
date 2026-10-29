@@ -99,7 +99,15 @@ fn json_output_is_an_array_of_finding_objects() -> Result<()> {
     assert_eq!(
         keys,
         [
-            "category", "column", "line", "matched", "message", "path", "rule", "severity"
+            "category",
+            "column",
+            "confidence",
+            "line",
+            "matched",
+            "message",
+            "path",
+            "rule",
+            "severity"
         ]
     );
     assert_eq!(first["path"], "tests/fixtures/tics.md");
@@ -262,7 +270,7 @@ fn a_byte_order_mark_does_not_hide_front_matter_or_shift_columns() -> Result<()>
     )?;
     assert_eq!(
         stdout(&output)?,
-        "<stdin>:4:9: x-not-y: possible AI-writing tic: appositive contrast (`X, not Y`) «, not spaces»\n"
+        "<stdin>:4:9: x-not-y: possible AI-writing tic: appositive contrast (`X, not Y`) «, not spaces» (confidence 0.76)\n"
     );
     Ok(())
 }
@@ -320,5 +328,45 @@ fn readme_rule_table_matches_tics_rules() -> Result<()> {
         .filter(|line| line.starts_with("| `"))
         .collect();
     assert_eq!(rows, expected);
+    Ok(())
+}
+
+#[test]
+fn min_confidence_hides_weak_findings_and_sets_the_exit_code() -> Result<()> {
+    let weak = "One sentence uses tabs, not spaces, in a long and otherwise plain paragraph about \
+                build settings, compiler flags, cache directories, network timeouts, retry \
+                limits, log rotation, file permissions and the order in which services start.\n";
+    let all = tics_with_stdin(&[], weak)?;
+    assert_eq!(all.status.code(), Some(1));
+    let strict = tics_with_stdin(&["--min-confidence", "0.9"], weak)?;
+    assert_eq!(strict.status.code(), Some(0));
+    assert_eq!(stdout(&strict)?, "");
+    let bad = tics_with_stdin(&["--min-confidence", "2"], weak)?;
+    assert_eq!(bad.status.code(), Some(2));
+    Ok(())
+}
+
+#[test]
+fn score_rates_each_file_and_exits_zero() -> Result<()> {
+    let output = tics(&["score", "tests/fixtures/tics.md", "tests/fixtures/clean.md"])?;
+    assert_eq!(output.status.code(), Some(0));
+    let text = stdout(&output)?;
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(
+        lines[0].starts_with("tests/fixtures/tics.md: 1.00 (21 findings in 86 words)"),
+        "{text}"
+    );
+    assert!(
+        lines[1].starts_with("tests/fixtures/clean.md: 0.29 (0 findings"),
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout(&tics(&[
+        "score",
+        "--format",
+        "json",
+        "tests/fixtures/tics.md",
+    ])?)?)?;
+    assert!(json[0]["score"].as_f64().is_some_and(|score| score > 0.9));
     Ok(())
 }

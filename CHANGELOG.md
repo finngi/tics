@@ -8,6 +8,24 @@ Rule ids are stable; a rule's `since` version is the release that added it.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-29
+
+### Added
+
+- A confidence from 0 to 1 on every finding, in human and JSON output. Each rule's hit count
+  is saturated and length-normalised as in BM25, then weighted by a logistic model fitted on
+  a corpus of human and AI text (DESIGN.md, "Calibration").
+- `--min-confidence N` to report only findings at or above `N`.
+- `tics score [PATH]...`: one score per file, with the rules behind it (human or JSON).
+- Rules `bold-label-line` (a paragraph led by a bold label, or a bold line used as a heading)
+  and `stock-section-label` (`Why it matters`, `How it works`, `Short answer:`, `TL;DR`).
+- `calibration/`: the scripts that build the corpus and fit the weights, with their reports.
+
+### Changed
+
+- Human output ends each finding with `(confidence N)`. JSON findings gain a `confidence`
+  field.
+
 ## [0.1.0] - 2026-10-29
 
 ### Added
@@ -32,5 +50,6 @@ Rule ids are stable; a rule's `since` version is the release that added it.
   - chatbot: `chatbot-residue`, `placeholder`, `leaked-markup`;
   - formatting: `em-dash`, `bold-lead-in`, `title-case-heading`.
 
-[Unreleased]: https://github.com/finngi/tics/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/finngi/tics/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/finngi/tics/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/finngi/tics/releases/tag/v0.1.0

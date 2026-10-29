@@ -27,20 +27,45 @@ tics --summary docs/          # per-rule counts, words scanned, hits per 1,000 w
 tics --format json docs/      # machine-readable findings
 tics --select em-dash,x-not-y docs/
 tics --ignore rule-of-three --severity warn docs/
+tics --min-confidence 0.6 docs/   # hide weak findings, such as one bold label in a long file
+tics score docs/              # one 0-1 score per file (also `--format json`)
 tics rules                    # list the rules (also `--format json`)
 ```
 
 Output, one finding per line:
 
 ```text
-docs/intro.md:12:41: x-not-y: possible AI-writing tic: appositive contrast (`X, not Y`) «, not inside the VM»
+docs/intro.md:12:41: x-not-y: possible AI-writing tic: appositive contrast (`X, not Y`) «, not inside the VM» (confidence 0.53)
 ```
 
 The column counts Unicode characters from 1. JSON output is an array of objects with `path`,
-`line`, `column`, `rule`, `category`, `severity`, `message` and `matched`. With `--summary`,
+`line`, `column`, `rule`, `category`, `severity`, `message`, `matched` and `confidence`. With `--summary`,
 JSON output becomes an object `{"findings": [...], "summary": {...}}`.
 
-Exit codes: `0` no findings, `1` findings, `2` usage or IO error.
+Exit codes: `0` no findings, `1` findings, `2` usage or IO error. `tics score` exits `0`
+unless there is an error.
+
+### Confidence
+
+Each finding has a confidence from 0 to 1: how likely it is, from this rule's hits in this file
+alone, that the file is AI-styled text, with even odds to start. `tics score` combines every
+rule into one number per file.
+
+Counts matter more than single hits. One bold label in a long page is something people write
+too; six in a short answer is not:
+
+```text
+$ tics score notes.md answer.md
+notes.md: 0.51 (1 finding in 475 words): bold-lead-in ×1
+answer.md: 0.96 (6 findings in 52 words): bold-lead-in ×6
+```
+
+The weights come from 146 human texts written before ChatGPT and 438 answers from eleven
+Claude and Codex models (see [DESIGN.md](DESIGN.md#calibration)). Rules that people use as
+often as models, such as `not-x-but-y`, get no weight and stay at the floor of 0.29. On
+held-out files, 3% of human texts scored 0.8 or more, against 86-90% of answers from Claude
+Opus and Sonnet and 0-22% from the Codex models, whose answers often have no tics at all. A
+score is a reason to reread a draft. It is not proof of who wrote it.
 
 ### What is checked
 
@@ -100,6 +125,8 @@ Every rule has a stable id and the version it appeared in, so rule changes show 
 | `leaked-markup` | chatbot | warn | 0.1.0 | leaked chatbot markup (`contentReference[oaicite`, `utm_source=chatgpt.com`) | [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing) |
 | `em-dash` | formatting | warn | 0.1.0 | em dash in prose | [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing) |
 | `bold-lead-in` | formatting | warn | 0.1.0 | list item led by a bold label and colon (`- **Label:** text`) | [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing) |
+| `bold-label-line` | formatting | warn | 0.2.0 | paragraph led by a bold label, or a bold line used as a heading (`**Why:** …`) | [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing) |
+| `stock-section-label` | formatting | warn | 0.2.0 | stock section label (`Why it matters`, `How it works`, `Short answer:`, `TL;DR`) | [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing) |
 | `title-case-heading` | formatting | info | 0.1.0 | heading in Title Case | [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing) |
 <!-- rules:end -->
 

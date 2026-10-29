@@ -7,7 +7,8 @@ inputs.rs    paths -> files (sorted walk) or stdin
 document.rs  source -> prose segments (masked, offsets unchanged) + directives + code-free text
 sentences.rs segment -> sentence ranges
 engine.rs    compiled rules x sentences/segments -> findings with line/column, suppression
-output.rs    human | JSON | summary | rule list
+score.rs     per-rule counts in a file -> confidence per finding and a score per file
+output.rs    human | JSON | summary | scores | rule list
 rules.rs     the rule table (data) and the two non-regex heuristics
 ```
 
@@ -244,6 +245,79 @@ False positives seen and how they were handled:
   `underscores the need`, `unlocks the mutex`, `landscape mode`, `elevated privileges`,
   `The function as a whole`, `World class`, `as an AIX package`, `[Your first sandbox](…)`
   link labels and `YYYY-MM-DD`; each is a negative example in the rule tests.
+
+## Calibration
+
+Confidence values are fitted, so they need data. `calibration/` holds the scripts; the corpus
+itself is not committed, because it is CC BY-SA text and model output that anyone can rebuild.
+
+### Corpus (built 2026-10-29)
+
+| Source | Documents | What |
+|---|---|---|
+| Stack Exchange | 72 | Top-voted answers from 11 sites, written and last edited before 2022-11-30 |
+| Wikipedia | 74 | Article lead sections from the last revision before 2022-11-01 |
+| Codex models | 292 | `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (36-37 each) via `codex exec` |
+| Claude models | 146 | Opus, Sonnet and Haiku (48-49 each) via `claude -p` with a plain assistant system prompt |
+
+The human texts predate ChatGPT, so none of them can be AI-assisted. Each model answered the
+same question as the human text (the Stack Exchange question, or "Write a short explanation of
+X for a general reader"), so topic does not separate the two sides.
+
+### What the corpus showed
+
+Share of documents with at least one hit. Stack Exchange only, where people also write lists
+and Markdown:
+
+| Signal | Human | Claude | Codex |
+|---|---|---|---|
+| `x-not-y` | 8% | 39% | 21% |
+| `bold-lead-in`, two or more | 4% | 63% | 29% |
+| bold label on its own line | 7% | 68% | 3% |
+| `em-dash` | 0% | 0% | 46% |
+| `rather-than` | 16% | 28% | 19% |
+| `not-x-but-y` | 8% | 3% | 1% |
+
+Most of the vocabulary and rhetoric rules (`delve`, `pivotal role`, `Moreover,`) almost never
+fire on these models: `ai-vocabulary` hit 1-3% of answers. Their tells are now structural
+(bold labels, label-led lists, stock section names) plus `X, not Y` and, for Codex, the em
+dash. Wikipedia leads use em dashes too (21%), which is why that rule needs a weight and not a
+yes or no. `not-x-but-y` and `transition-opener` were more common in the human text, so they
+get no weight. Two rules came out of this: `bold-label-line` (71% of Claude answers, 5% of
+human texts) and `stock-section-label` (33% of Claude answers, no human texts).
+
+The corpus also turned up patterns that are not rules, because people use them as much in
+other genres: semicolons (54% of Codex Q&A answers, but 46% of Wikipedia leads) and phrases
+such as `rule of thumb` or `in practice`.
+
+### Model
+
+For rule `r` with `tf` hits in a file of `words` words:
+
+```text
+x_r = tf * (k1 + 1) / (tf + k1 * (1 - b + b * words / avg_words))      (BM25 saturation)
+p   = sigmoid(bias + sum_r w_r * x_r)
+```
+
+The weights come from a logistic regression with weights kept at zero or above, an L2 penalty
+pulling each weight towards 1.0 (so a rule the corpus never saw keeps a middling weight), and
+classes weighted to even odds. `k1` and `b` were picked by grouped 5-fold cross-validation,
+where all answers to one question stay in the same fold: `k1 = 2.0`, `b = 0.75`.
+
+Held-out results (AUC 0.73):
+
+| Group | Score ≥ 0.5 | Score ≥ 0.8 |
+|---|---|---|
+| Human | 18% | 3% |
+| Claude Opus / Sonnet | 96% / 96% | 86% / 90% |
+| Claude Haiku | 73% | 52% |
+| Codex models | 22-78% | 0-22% |
+
+Codex answers are short (a median of 81 words, against 265 for the human texts) and often
+have no tics at all, so tics cannot tell them from human text. A score measures tics; it cannot say who wrote a file.
+
+To refit after changing rules, see `calibration/README.md`, then copy the constants from
+`calibration/weights.json` into `src/score.rs`. A test fails until they match.
 
 ## Provenance
 

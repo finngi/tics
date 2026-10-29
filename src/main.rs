@@ -12,6 +12,7 @@ mod engine;
 mod inputs;
 mod output;
 mod rules;
+mod score;
 mod sentences;
 
 #[cfg(test)]
@@ -45,13 +46,34 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     }
     let selected = select_rules(cli)?;
     let compiled = engine::compile(&selected)?;
-    let mut findings = Vec::new();
-    let mut words = 0;
-    for input in inputs::collect(&cli.paths)? {
+    let paths = match &cli.command {
+        Some(Command::Score { paths }) => paths,
+        _ => &cli.paths,
+    };
+    let mut reports = Vec::new();
+    for input in inputs::collect(paths)? {
         let (path, text) = inputs::read(&input)?;
         let report = engine::scan(&path, &text, inputs::mode_of(&input), &compiled);
-        findings.extend(report.findings);
+        reports.push((path, report));
+    }
+    if matches!(cli.command, Some(Command::Score { .. })) {
+        let text = match cli.format {
+            Format::Human => output::scores_human(&reports),
+            Format::Json => output::scores_json(&reports)?,
+        };
+        write_stdout(&text)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut findings = Vec::new();
+    let mut words = 0;
+    for (_, report) in reports {
         words += report.words;
+        findings.extend(
+            report
+                .findings
+                .into_iter()
+                .filter(|finding| finding.confidence >= cli.min_confidence),
+        );
     }
     let summary = cli.summary.then(|| output::Summary::new(&findings, words));
     let text = match cli.format {

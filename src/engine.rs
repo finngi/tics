@@ -1,5 +1,6 @@
 //! Compiles the selected rules once and runs them over a parsed document.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use anyhow::{Context, Result};
@@ -8,12 +9,12 @@ use serde::Serialize;
 
 use crate::document::{self, Directive, DirectiveKind, Document, Mode, SegmentKind};
 use crate::rules::{Category, Detector, Rule, Severity};
-use crate::sentences;
+use crate::{score, sentences};
 
 /// Longest `matched` excerpt, in characters.
 const MATCHED_MAX_CHARS: usize = 80;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct Finding {
     pub(crate) path: String,
     pub(crate) line: usize,
@@ -23,6 +24,8 @@ pub(crate) struct Finding {
     pub(crate) severity: Severity,
     pub(crate) message: String,
     pub(crate) matched: String,
+    /// How strongly this rule's hits in this file suggest AI-style text (0 to 1).
+    pub(crate) confidence: f64,
 }
 
 /// The result of scanning one file.
@@ -30,6 +33,8 @@ pub(crate) struct Finding {
 pub(crate) struct FileReport {
     pub(crate) findings: Vec<Finding>,
     pub(crate) words: usize,
+    /// Confidence that the whole file is AI-style text (0 to 1).
+    pub(crate) score: f64,
 }
 
 enum Matcher {
@@ -113,6 +118,7 @@ pub(crate) fn scan(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> 
         return FileReport {
             findings: Vec::new(),
             words,
+            score: score::file_score(&BTreeMap::new(), words),
         };
     }
     let lines = LineIndex::new(source);
@@ -153,11 +159,24 @@ pub(crate) fn scan(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> 
             severity: rule.severity,
             message: format!("possible AI-writing tic: {}", rule.description),
             matched: excerpt(source.get(span).unwrap_or_default()),
+            confidence: 0.0,
         });
     }
     findings.sort_by(|a, b| (a.line, a.column, a.rule).cmp(&(b.line, b.column, b.rule)));
     findings.dedup();
-    FileReport { findings, words }
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for finding in &findings {
+        *counts.entry(finding.rule).or_insert(0) += 1;
+    }
+    for finding in &mut findings {
+        finding.confidence = score::confidence(finding.rule, counts[finding.rule], words);
+    }
+    let score = score::file_score(&counts, words);
+    FileReport {
+        findings,
+        words,
+        score,
+    }
 }
 
 /// A sentence of masked prose and the byte offset of its first byte in the source.

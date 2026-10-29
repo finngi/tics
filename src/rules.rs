@@ -10,6 +10,28 @@ const SIGNS: &str = "https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing
 const WORDS: &str = "https://en.wikipedia.org/wiki/Wikipedia:Manual_of_Style/Words_to_watch";
 const BUZZ: &str = "https://en.wikipedia.org/wiki/Wikipedia:Marketing_buzzspeak";
 const V0_1_0: &str = "0.1.0";
+const V0_2_0: &str = "0.2.0";
+
+/// Section labels that chat models put on their own line. From the calibration corpus
+/// (DESIGN.md, "Calibration"): in about half of one model family's explanations, never in the
+/// human baseline.
+macro_rules! stock_label {
+    () => {
+        r"(?:the\x20)?(?:
+            why\x20(?:it|this|that)\x20(?:matters|works)
+          | how\x20(?:it|this)\x20works
+          | what\x20(?:it|this)\x20means
+          | key\x20(?:takeaways?|points|ideas)
+          | the\x20basics
+          | (?:short|long|quick)\x20answer
+          | short\x20version
+          | tl;?\x20?dr
+          | in\x20short
+          | bottom\x20line
+          | in\x20a\x20nutshell
+        )\b"
+    };
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -482,6 +504,36 @@ pub(crate) static RULES: &[Rule] = &[
             r"\A(?:[-*+]|\d{1,9}[.)])[\x20\t]+(?:\[[\x20xX]\][\x20\t]+)?
               (?P<m>(?:\*\*|__)[^*_\n]{1,80}?(?::(?:\*\*|__)|(?:\*\*|__)[\x20\t]*:))",
         ),
+    },
+    Rule {
+        id: "bold-label-line",
+        category: Category::Formatting,
+        severity: Severity::Warn,
+        since: V0_2_0,
+        source: SIGNS,
+        description: "paragraph led by a bold label, or a bold line used as a heading (`**Why:** …`)",
+        detector: Detector::Raw(
+            r"(?m)^[\x20\t]{0,3}(?:
+                (?:\*\*|__)[^*_\n]{1,60}?[:.]?(?:\*\*|__)[:.]?[\x20\t]*$
+              | (?:\*\*|__)[^*_\n]{1,60}?[:.](?:\*\*|__)[\x20\t]
+              | (?:\*\*|__)[^*_\n]{1,60}?(?:\*\*|__)[:.][\x20\t]
+            )",
+        ),
+    },
+    Rule {
+        id: "stock-section-label",
+        category: Category::Formatting,
+        severity: Severity::Warn,
+        since: V0_2_0,
+        source: SIGNS,
+        description: "stock section label (`Why it matters`, `How it works`, `Short answer:`, `TL;DR`)",
+        detector: Detector::Raw(concat!(
+            r"(?m)^[\x20\t]{0,3}(?:\#{1,6}[\x20\t]+(?:\*\*|__)?|\*\*|__)",
+            stock_label!(),
+            r"|(?m)^[\x20\t]{0,3}",
+            stock_label!(),
+            r"[\x20\t]?:",
+        )),
     },
     Rule {
         id: "title-case-heading",
