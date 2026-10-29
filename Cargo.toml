@@ -1,0 +1,38 @@
+[package]
+name = "tics"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A small, deterministic CLI that flags AI-writing tics in Markdown and plain-text prose"
+license = "Apache-2.0"
+repository = "https://github.com/finngi/tics"
+readme = "README.md"
+keywords = ["markdown", "lint", "prose", "writing", "cli"]
+categories = ["command-line-utilities", "text-processing"]
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+pulldown-cmark = { version = "0.13.5", default-features = false }
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+dbg_macro = "warn"
+exit = "warn"
+get_unwrap = "warn"
+unwrap_used = "warn"
+print_stdout = "warn"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
