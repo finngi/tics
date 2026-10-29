@@ -24,7 +24,7 @@ Needs a stable Rust toolchain (edition 2024, Rust 1.88 or newer).
 tics README.md docs/          # files and directories (recursive)
 cat draft.md | tics           # stdin (also `tics -`)
 tics --summary docs/          # per-rule counts, words scanned, hits per 1,000 words
-tics --format json docs/      # machine-readable findings
+tics --json docs/             # machine-readable findings (also `--format json`)
 tics --select em-dash,x-not-y docs/
 tics --ignore rule-of-three --severity warn docs/
 tics --min-confidence 0.6 docs/   # hide weak findings, such as one bold label in a long file
@@ -32,16 +32,27 @@ tics score docs/              # one 0-1 score per file (also `--format json`)
 tics rules                    # list the rules (also `--format json`)
 ```
 
-In a terminal, findings are grouped by file. Each one shows its line with the match
-underlined, how strongly it points to AI-styled text, and a one-line fix:
+In a terminal, files with findings show their overall AI-style percentage and counts by rule.
+Findings follow in file order, with the match underlined and a fix. The pattern percentage uses
+that rule alone; below 50% means its observed rate is more typical of human text. The files
+overview lists up to ten files by score. Files with fewer than 80 words are marked as too short
+to judge:
 
 ```text
-notes.md  2 findings · AI-style score 0.97
+tests/fixtures/notes.md
+  AI-style: 62% · 1 finding
+  Tics: bold-lead-in ×1
 
-  3:28     Appositive contrast   85%
-           │ It works. Use tabs, not spaces.
-           │                ^^^^^^^^^^^^
-           ╰ Keep the claim; cut ", not Y" unless readers would assume Y.  x-not-y
+  10:3 List item led by a bold label and colon · 81% AI-leaning pattern
+  │ - **Note:** the cache now lives in `target/shared`, so delete the old one by hand.
+  │   ^^^^^^^^^
+  ╰ Write the items as plain sentences, or keep bold labels few. (bold-lead-in)
+
+Files (AI-style)
+  62%  tests/fixtures/notes.md  1 finding
+
+● 1 possible tic in 1 of 1 file (168 words)
+  Pattern below 50%: more typical of human text.
 ```
 
 Piped into another program, or with `--format compact`, it prints one finding per line:

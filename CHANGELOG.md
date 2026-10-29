@@ -25,9 +25,10 @@ Rule ids are stable; a rule's `since` version is the release that added it.
   and `stock-section-label` (`Why it matters`, `How it works`, `Short answer:`, `TL;DR`).
 - `calibration/`: scripts that build the corpus and fit the model, with their reports.
 
-- Readable terminal output (`--format pretty`, the default in a terminal): findings grouped
-  by file, each with its line, the match underlined, a confidence and a one-line fix.
-  `--color auto|always|never` respects `NO_COLOR`.
+- Readable terminal output (`--format pretty`, the default in a terminal): file percentages,
+  counts by rule, findings in file order with fixes, and a compact files overview. Short files
+  are marked as having too little text to judge. `--color auto|always|never` respects `NO_COLOR`.
+- `--json` as a shorthand for `--format json`.
 
 ### Changed
 

@@ -33,6 +33,101 @@ fn stdout(output: &Output) -> Result<String> {
 }
 
 #[test]
+fn compact_output_and_piped_default_keep_the_exact_contract() -> Result<()> {
+    let input = "Use tabs, not spaces.\n";
+    let expected = "<stdin>:1:9: x-not-y: possible AI-writing tic: appositive contrast (`X, not Y`) «, not spaces» (confidence 0.83)\n";
+    for args in [&[][..], &["--format", "compact"][..]] {
+        let output = tics_with_stdin(args, input)?;
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(stdout(&output)?, expected);
+    }
+    Ok(())
+}
+
+#[test]
+fn json_contract_keeps_findings_summary_and_score_fields() -> Result<()> {
+    let input = "Use tabs, not spaces.\n";
+    let finding = serde_json::json!({
+        "path": "<stdin>",
+        "line": 1,
+        "column": 9,
+        "rule": "x-not-y",
+        "category": "contrast",
+        "severity": "warn",
+        "message": "possible AI-writing tic: appositive contrast (`X, not Y`)",
+        "matched": ", not spaces",
+        "confidence": 0.83
+    });
+    let plain: Value =
+        serde_json::from_str(&stdout(&tics_with_stdin(&["--format", "json"], input)?)?)?;
+    assert_eq!(plain, serde_json::json!([finding]));
+    let with_summary: Value = serde_json::from_str(&stdout(&tics_with_stdin(
+        &["--format", "json", "--summary"],
+        input,
+    )?)?)?;
+    assert_eq!(
+        with_summary,
+        serde_json::json!({
+            "findings": [finding],
+            "summary": {
+                "rules": {"x-not-y": 1},
+                "total": 1,
+                "words": 4,
+                "per_1000_words": 250.0
+            }
+        })
+    );
+    let score: Value = serde_json::from_str(&stdout(&tics_with_stdin(
+        &["score", "--format", "json"],
+        input,
+    )?)?)?;
+    assert_eq!(
+        score,
+        serde_json::json!([{
+            "path": "<stdin>",
+            "score": 0.81,
+            "words": 4,
+            "units": {"sentences": 1, "list_items": 0, "headings": 0, "blocks": 1},
+            "findings": 1,
+            "rules": {"x-not-y": 1},
+            "occupied": {"x-not-y": 1},
+            "sections": [{
+                "line": 1,
+                "title": null,
+                "units": {"sentences": 1, "list_items": 0, "headings": 0, "blocks": 1},
+                "findings": 1,
+                "score": 0.81
+            }]
+        }])
+    );
+    Ok(())
+}
+
+#[test]
+fn json_shorthand_matches_format_json() -> Result<()> {
+    let input = "Use tabs, not spaces.\n";
+    for (short, long) in [
+        (&["--json"][..], &["--format", "json"][..]),
+        (
+            &["--json", "--summary"][..],
+            &["--format", "json", "--summary"][..],
+        ),
+        (&["score", "--json"][..], &["score", "--format", "json"][..]),
+        (&["--json", "score"][..], &["--format", "json", "score"][..]),
+        (&["rules", "--json"][..], &["rules", "--format", "json"][..]),
+    ] {
+        let shorthand = tics_with_stdin(short, input)?;
+        let explicit = tics_with_stdin(long, input)?;
+        assert_eq!(shorthand.status.code(), explicit.status.code());
+        assert_eq!(shorthand.stdout, explicit.stdout);
+    }
+    let conflict = tics(&["--json", "--format", "pretty"])?;
+    assert_eq!(conflict.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("cannot be used with"));
+    Ok(())
+}
+
+#[test]
 fn sample_file_reports_exact_positions_and_exits_one() -> Result<()> {
     let output = tics(&["tests/fixtures/tics.md"])?;
     assert_eq!(output.status.code(), Some(1));

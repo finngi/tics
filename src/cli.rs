@@ -23,6 +23,10 @@ pub(crate) struct Cli {
     #[arg(long, value_enum, global = true)]
     pub(crate) format: Option<Format>,
 
+    /// Shorthand for `--format json`.
+    #[arg(long, global = true, conflicts_with = "format")]
+    pub(crate) json: bool,
+
     /// When to colour pretty output (`auto` respects `NO_COLOR` and pipes).
     #[arg(long, value_enum, default_value_t = ColorChoice::Auto, global = true)]
     pub(crate) color: ColorChoice,
@@ -122,6 +126,14 @@ mod tests {
         let cli = Cli::try_parse_from(["tics", "rules", "--format", "json"])?;
         assert!(matches!(cli.command, Some(Command::Rules)));
         assert_eq!(cli.format, Some(Format::Json));
+        Ok(())
+    }
+
+    #[test]
+    fn json_flag_is_global_and_conflicts_with_format() -> Result<()> {
+        let cli = Cli::try_parse_from(["tics", "score", "--json"])?;
+        assert!(cli.json);
+        assert!(Cli::try_parse_from(["tics", "--json", "--format", "pretty"]).is_err());
         Ok(())
     }
 

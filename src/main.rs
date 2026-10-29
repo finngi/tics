@@ -37,7 +37,12 @@ fn main() -> ExitCode {
 
 fn run(cli: &Cli) -> Result<ExitCode> {
     let terminal = std::io::stdout().is_terminal();
-    let format = cli.format.unwrap_or(if terminal {
+    let format = if cli.json {
+        Some(Format::Json)
+    } else {
+        cli.format
+    }
+    .unwrap_or(if terminal {
         Format::Pretty
     } else {
         Format::Compact
