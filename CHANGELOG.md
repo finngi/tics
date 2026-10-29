@@ -8,6 +8,36 @@ Rule ids are stable; a rule's `since` version is the release that added it.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-29
+
+### Added
+
+- A confidence from 0 to 1 on every finding, in human and JSON output, from a beta-binomial
+  likelihood-ratio model fitted on a corpus of human and AI text (DESIGN.md, "Calibration").
+  A rule's hits are counted as occupied opportunities (sentences, list items, headings or
+  Markdown blocks), so repetition and file length are handled by the model.
+- `--min-confidence N` to report only findings at or above `N`.
+- `tics score [PATH]...`: one score per file with the rules behind it, `--sections` for one
+  score per heading section, and `units`, `occupied` and `sections` in JSON. Files with no
+  prose get no score.
+- A signed strength per rule in `tics rules` and the README table.
+- Rules `bold-label-line` (a paragraph led by a bold label, or a bold line used as a heading)
+  and `stock-section-label` (`Why it matters`, `How it works`, `Short answer:`, `TL;DR`).
+- `calibration/`: scripts that build the corpus and fit the model, with their reports.
+
+- Readable terminal output (`--format pretty`, the default in a terminal): file percentages,
+  counts by rule, findings in file order with fixes, and a compact files overview. Short files
+  are marked as having too little text to judge. `--color auto|always|never` respects `NO_COLOR`.
+- `--json` as a shorthand for `--format json`.
+
+### Changed
+
+- Directory walks respect parent and nested `.gitignore` files. Explicit file arguments
+  still scan ignored files.
+- The one-line-per-finding output is now `--format compact` (`--format human` still works)
+  and is the default when output is piped. Each line ends with `(confidence N)`, and JSON
+  findings gain a `confidence` field.
+
 ## [0.1.0] - 2026-10-29
 
 ### Added
@@ -32,5 +62,6 @@ Rule ids are stable; a rule's `since` version is the release that added it.
   - chatbot: `chatbot-residue`, `placeholder`, `leaked-markup`;
   - formatting: `em-dash`, `bold-lead-in`, `title-case-heading`.
 
-[Unreleased]: https://github.com/finngi/tics/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/finngi/tics/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/finngi/tics/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/finngi/tics/releases/tag/v0.1.0

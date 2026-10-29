@@ -1,5 +1,6 @@
 //! Compiles the selected rules once and runs them over a parsed document.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use anyhow::{Context, Result};
@@ -8,12 +9,13 @@ use serde::Serialize;
 
 use crate::document::{self, Directive, DirectiveKind, Document, Mode, SegmentKind};
 use crate::rules::{Category, Detector, Rule, Severity};
+use crate::score::{self, Unit, Units};
 use crate::sentences;
 
 /// Longest `matched` excerpt, in characters.
 const MATCHED_MAX_CHARS: usize = 80;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct Finding {
     pub(crate) path: String,
     pub(crate) line: usize,
@@ -23,6 +25,18 @@ pub(crate) struct Finding {
     pub(crate) severity: Severity,
     pub(crate) message: String,
     pub(crate) matched: String,
+    /// How strongly this rule's hits in this file suggest AI-style text (0 to 1).
+    pub(crate) confidence: f64,
+    /// Up to `CONTEXT_CHARS` characters of the hit's line either side of it, with `…` where
+    /// the line is cut, for the terminal display.
+    #[serde(skip)]
+    pub(crate) context: String,
+    /// Where the hit starts in `context`, in characters.
+    #[serde(skip)]
+    pub(crate) context_column: usize,
+    /// How many characters of the line the hit covers.
+    #[serde(skip)]
+    pub(crate) width: usize,
 }
 
 /// The result of scanning one file.
@@ -30,6 +44,24 @@ pub(crate) struct Finding {
 pub(crate) struct FileReport {
     pub(crate) findings: Vec<Finding>,
     pub(crate) words: usize,
+    /// Opportunities each kind of rule had: sentences, list items, headings, blocks.
+    pub(crate) units: Units,
+    /// Per rule, how many opportunities hold at least one hit (the model's `k`).
+    pub(crate) occupied: BTreeMap<&'static str, usize>,
+    /// Confidence that the whole file is AI-style text (0 to 1); none for a file with no prose.
+    pub(crate) score: Option<f64>,
+    /// The file split at each heading, each with its own score.
+    pub(crate) sections: Vec<Section>,
+}
+
+/// The text from one heading to the next (or the text before the first heading).
+#[derive(Debug, Serialize)]
+pub(crate) struct Section {
+    pub(crate) line: usize,
+    pub(crate) title: Option<String>,
+    pub(crate) units: Units,
+    pub(crate) findings: usize,
+    pub(crate) score: Option<f64>,
 }
 
 enum Matcher {
@@ -47,6 +79,7 @@ enum Matcher {
     ListItem(Regex),
     Heading(fn(&str) -> bool),
     Raw(Regex),
+    Block(Regex),
 }
 
 pub(crate) struct Compiled {
@@ -82,6 +115,7 @@ pub(crate) fn compile(rules: &[&'static Rule]) -> Result<Vec<Compiled>> {
                 Detector::ListItem(pattern) => Matcher::ListItem(build(pattern)?),
                 Detector::Heading(check) => Matcher::Heading(*check),
                 Detector::Raw(pattern) => Matcher::Raw(build(pattern)?),
+                Detector::Block(pattern) => Matcher::Block(build(pattern)?),
             };
             Ok(Compiled { rule, matcher })
         })
@@ -113,6 +147,10 @@ pub(crate) fn scan(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> 
         return FileReport {
             findings: Vec::new(),
             words,
+            units: Units::default(),
+            occupied: BTreeMap::new(),
+            score: None,
+            sections: Vec::new(),
         };
     }
     let lines = LineIndex::new(source);
@@ -139,11 +177,15 @@ pub(crate) fn scan(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> 
     hits.sort_by_key(|(_, span)| span.start);
     let mut cursor = Cursor::new(source, &lines);
     let mut findings: Vec<Finding> = Vec::new();
+    // Ascending by offset, like `hits`, so ranges of it can be found by binary search.
+    let mut kept: Vec<(&'static Rule, usize)> = Vec::new();
     for (rule, span) in hits {
         let (line, column) = cursor.position(span.start);
         if is_suppressed(&document.directives, &lines, rule.id, line) {
             continue;
         }
+        kept.push((rule, span.start));
+        let context = line_context(source, &lines, line, span.start);
         findings.push(Finding {
             path: path.to_owned(),
             line,
@@ -152,12 +194,200 @@ pub(crate) fn scan(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> 
             category: rule.category,
             severity: rule.severity,
             message: format!("possible AI-writing tic: {}", rule.description),
-            matched: excerpt(source.get(span).unwrap_or_default()),
+            matched: excerpt(source.get(span.clone()).unwrap_or_default()),
+            confidence: 0.0,
+            context: context.0,
+            context_column: context.1,
+            width: source
+                .get(span)
+                .unwrap_or_default()
+                .split('\n')
+                .next()
+                .map_or(1, |first| first.chars().count().max(1)),
         });
     }
     findings.sort_by(|a, b| (a.line, a.column, a.rule).cmp(&(b.line, b.column, b.rule)));
     findings.dedup();
-    FileReport { findings, words }
+    let selected: Vec<&'static Rule> = rules.iter().map(|compiled| compiled.rule).collect();
+    let layout = Layout::new(&document, &blocks);
+    let whole = 0..source.len();
+    let units = layout.units(&whole);
+    let occupied = layout.occupied(&kept);
+    // One confidence per rule: it depends only on the rule's counts in the file.
+    let confidence: BTreeMap<&str, f64> = selected
+        .iter()
+        .map(|rule| {
+            let count = occupied.get(rule.id).copied().unwrap_or(0);
+            (rule.id, score::confidence(rule, count, &units))
+        })
+        .collect();
+    for finding in &mut findings {
+        finding.confidence = confidence.get(finding.rule).copied().unwrap_or(0.0);
+    }
+    // A file with no prose says nothing either way, so it gets no score.
+    let score = units
+        .has_prose()
+        .then(|| score::score(&occupied, &units, &selected));
+    let sections = sections(&document, &lines, &layout, &kept, &findings, &selected);
+    FileReport {
+        findings,
+        words,
+        units,
+        occupied,
+        score,
+        sections,
+    }
+}
+
+/// Where each kind of opportunity starts, as ascending byte offsets.
+struct Layout {
+    /// Every sentence, with whether it is long enough (three words) to count as an opportunity.
+    sentences: Vec<(usize, bool)>,
+    /// `counted[i]`: how many of the first `i` sentences count as opportunities.
+    counted: Vec<usize>,
+    list_items: Vec<usize>,
+    headings: Vec<usize>,
+    blocks: Vec<usize>,
+}
+
+/// Sentences shorter than this (table cells, numbers, labels) are not opportunities.
+const MIN_SENTENCE_WORDS: usize = 3;
+
+impl Layout {
+    fn new(document: &Document, blocks: &[Vec<Sentence<'_>>]) -> Self {
+        let mut sentences: Vec<(usize, bool)> = blocks
+            .iter()
+            .flatten()
+            .map(|sentence| {
+                (
+                    sentence.start,
+                    count_words(sentence.text) >= MIN_SENTENCE_WORDS,
+                )
+            })
+            .collect();
+        sentences.sort_unstable();
+        let mut headings: Vec<usize> = document
+            .segments
+            .iter()
+            .filter(|segment| segment.kind == SegmentKind::Heading)
+            .map(|segment| segment.start)
+            .collect();
+        headings.sort_unstable();
+        let mut counted = Vec::with_capacity(sentences.len() + 1);
+        counted.push(0);
+        for (_, counts) in &sentences {
+            counted.push(counted.last().copied().unwrap_or(0) + usize::from(*counts));
+        }
+        Self {
+            sentences,
+            counted,
+            list_items: document.list_items.clone(),
+            headings,
+            blocks: document.blocks.clone(),
+        }
+    }
+
+    /// Opportunities that start inside `range`, by binary search over the sorted starts.
+    fn units(&self, range: &Range<usize>) -> Units {
+        let within = |starts: &[usize]| {
+            starts.partition_point(|start| *start < range.end)
+                - starts.partition_point(|start| *start < range.start)
+        };
+        let first = self
+            .sentences
+            .partition_point(|(start, _)| *start < range.start);
+        let last = self
+            .sentences
+            .partition_point(|(start, _)| *start < range.end);
+        Units {
+            sentences: self.counted[last] - self.counted[first],
+            list_items: within(&self.list_items),
+            headings: within(&self.headings),
+            blocks: within(&self.blocks),
+        }
+    }
+
+    /// Index of the opportunity of kind `unit` that holds `offset`.
+    fn index_of(&self, unit: Unit, offset: usize) -> usize {
+        let position = match unit {
+            Unit::Sentence => self
+                .sentences
+                .partition_point(|(start, _)| *start <= offset),
+            Unit::ListItem => self.list_items.partition_point(|start| *start <= offset),
+            Unit::Heading => self.headings.partition_point(|start| *start <= offset),
+            Unit::Block => self.blocks.partition_point(|start| *start <= offset),
+        };
+        position.saturating_sub(1)
+    }
+
+    /// Per rule, how many distinct opportunities hold at least one of `kept`'s hits. Three
+    /// em dashes in one sentence occupy one sentence.
+    fn occupied(&self, kept: &[(&'static Rule, usize)]) -> BTreeMap<&'static str, usize> {
+        let mut seen: BTreeSet<(&'static str, usize)> = BTreeSet::new();
+        for (rule, offset) in kept {
+            seen.insert((rule.id, self.index_of(rule.unit(), *offset)));
+        }
+        let mut counts = BTreeMap::new();
+        for (id, _) in seen {
+            *counts.entry(id).or_insert(0) += 1;
+        }
+        counts
+    }
+}
+
+/// Splits the file at each heading and scores each part on its own.
+fn sections(
+    document: &Document,
+    lines: &LineIndex,
+    layout: &Layout,
+    kept: &[(&'static Rule, usize)],
+    findings: &[Finding],
+    selected: &[&'static Rule],
+) -> Vec<Section> {
+    let mut starts: Vec<(usize, Option<String>)> = document
+        .segments
+        .iter()
+        .filter(|segment| segment.kind == SegmentKind::Heading)
+        // A section starts at its heading's line, so the heading belongs to its own section.
+        .map(|segment| {
+            let line_start = lines.start_of(lines.line_of(segment.start));
+            (line_start, Some(segment.text.trim().to_owned()))
+        })
+        .collect();
+    if starts.first().is_none_or(|(start, _)| *start > 0) {
+        starts.insert(0, (0, None));
+    }
+    let mut sections = Vec::new();
+    for (index, (start, title)) in starts.iter().enumerate() {
+        let end = starts.get(index + 1).map_or(usize::MAX, |(next, _)| *next);
+        let range = *start..end;
+        let units = layout.units(&range);
+        if title.is_none() && units == Units::default() {
+            continue;
+        }
+        let from = kept.partition_point(|(_, offset)| *offset < range.start);
+        let to = kept.partition_point(|(_, offset)| *offset < range.end);
+        let occupied = layout.occupied(&kept[from..to]);
+        // Findings are sorted by line; a section runs from its heading line to the next one.
+        let first = lines.line_of(*start);
+        let next = if end == usize::MAX {
+            usize::MAX
+        } else {
+            lines.line_of(end)
+        };
+        let count = findings.partition_point(|finding| finding.line < next)
+            - findings.partition_point(|finding| finding.line < first);
+        sections.push(Section {
+            line: first,
+            title: title.clone(),
+            units,
+            findings: count,
+            score: units
+                .has_prose()
+                .then(|| score::score(&occupied, &units, selected)),
+        });
+    }
+    sections
 }
 
 /// A sentence of masked prose and the byte offset of its first byte in the source.
@@ -250,6 +480,9 @@ impl Compiled {
                         .map(|hit| hit.range()),
                 );
             }
+            Matcher::Block(pattern) => {
+                spans.extend(pattern.find_iter(&document.visible).map(|hit| hit.range()));
+            }
         }
     }
 }
@@ -289,6 +522,43 @@ fn is_suppressed(directives: &[Directive], lines: &LineIndex, rule: &str, line: 
 }
 
 /// Collapses whitespace and caps the length so one finding stays on one line.
+/// Characters of context kept either side of a hit; the terminal window is narrower.
+const CONTEXT_CHARS: usize = 160;
+
+/// The hit's line around byte `hit`, cut to `CONTEXT_CHARS` either side with `…`, and the
+/// hit's character offset in it. Work is bounded by the window, not the line, so a 1 MiB line
+/// with thousands of hits stays linear.
+fn line_context(source: &str, lines: &LineIndex, line: usize, hit: usize) -> (String, usize) {
+    let line_start = lines.start_of(line);
+    let line_end = lines
+        .starts
+        .get(line)
+        .map_or(source.len(), |next| next.saturating_sub(1));
+    let hit = hit.clamp(line_start, line_end);
+    let before = source.get(line_start..hit).unwrap_or_default();
+    let after = source.get(hit..line_end).unwrap_or_default();
+    let from = before
+        .char_indices()
+        .rev()
+        .nth(CONTEXT_CHARS - 1)
+        .map_or(0, |(index, _)| index);
+    let to = after
+        .char_indices()
+        .nth(CONTEXT_CHARS)
+        .map_or(after.len(), |(index, _)| index);
+    let mut text = String::new();
+    if from > 0 {
+        text.push('…');
+    }
+    text.push_str(&before[from..]);
+    let column = text.chars().count();
+    text.push_str(after[..to].trim_end_matches('\r'));
+    if to < after.len() {
+        text.push('…');
+    }
+    (text, column)
+}
+
 fn excerpt(text: &str) -> String {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= MATCHED_MAX_CHARS {

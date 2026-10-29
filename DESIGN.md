@@ -1,20 +1,21 @@
 # Design
 
-`tics` is one binary crate (about 3,100 lines of Rust, roughly half of them tests). The pipeline:
+`tics` is one binary crate (about 4,200 lines of Rust, about 40% of them tests). The pipeline:
 
 ```text
 inputs.rs    paths -> files (sorted walk) or stdin
 document.rs  source -> prose segments (masked, offsets unchanged) + directives + code-free text
 sentences.rs segment -> sentence ranges
 engine.rs    compiled rules x sentences/segments -> findings with line/column, suppression
-output.rs    human | JSON | summary | rule list
+score.rs     per-rule counts in a file -> confidence per finding and a score per file
+output.rs    human | JSON | summary | scores | rule list
 rules.rs     the rule table (data) and the two non-regex heuristics
 ```
 
 ## Dependencies
 
 Versions checked with `cargo info` against crates.io on 2026-10-29; APIs read in
-`~/.cargo/registry/src`. 33 crates in the normal dependency tree, most of them clap's and
+`~/.cargo/registry/src`. 42 crates in the normal dependency tree, most of them clap's and
 serde's proc-macro stack.
 
 | Crate | Version | Why |
@@ -24,15 +25,19 @@ serde's proc-macro stack.
 | `clap` | 4.6.7, `derive` | Argument parsing, `--help`/`--version`, exit code 2 on usage errors, value enums for `--format`/`--severity`. |
 | `serde` + `serde_json` | 1.0.229 / 1.0.154 | Correct JSON escaping for `--format json`; derive keeps output structs and JSON in sync. clap already brings the proc-macro stack, so the extra build cost is small. |
 | `anyhow` | 1.0.104 | Application error chains with context (`reading docs/a.md as UTF-8: …`). |
+| `ignore` | 0.4.25 | Directory walking with Git's glob and negation rules, parent `.gitignore` files and nested overrides. Keeps that parsing out of the CLI. |
 
-Considered and not used: `walkdir`/`ignore` (a sorted `read_dir` recursion is 25 lines and the
-skip rules are three names), `once_cell`/`LazyLock` (rules are compiled once per run in
+The walker enables only `.gitignore` rules, even outside Git repositories. It keeps the
+existing hidden and build-directory skips, includes hidden files, and does not follow
+directory symlinks. Files named explicitly bypass ignore rules.
+
+Considered and not used: `once_cell`/`LazyLock` (rules are compiled once per run in
 `run()` and passed by reference, so no global and no `expect`), `assert_cmd`/`tempfile`
 (end-to-end tests use `CARGO_BIN_EXE_tics` and `CARGO_TARGET_TMPDIR`).
 
 ## Skipping Markdown with exact positions
 
-**Decision: pulldown-cmark plus a byte-preserving mask.** For each prose block the engine sees
+The decision was pulldown-cmark plus a byte-preserving mask. For each prose block the engine sees
 the original source slice with every non-prose character replaced by as many spaces as it
 has bytes (newlines kept). An offset in the masked text is the offset in the file, so
 line/column come from one binary search over line starts; there is no mapping table to get
@@ -125,7 +130,7 @@ first-line columns match what an editor shows.
 
 - `src/rule_tests.rs`: a table with, per rule, sentences it must flag and realistic technical
   prose it must not flag. One test asserts every rule has ≥ 2 of each; another runs them all
-  and reports every miss and false positive at once. 28 rules, 69 positive and 71 negative
+  and reports every miss and false positive at once. 30 rules, each with at least two positive and two negative
   examples.
 - Unit tests per module: masking (fences of both kinds and lengths, indented code vs lazy
   continuation, inline code, URLs, autolinks, link destinations, front matter position,
@@ -244,6 +249,107 @@ False positives seen and how they were handled:
   `underscores the need`, `unlocks the mutex`, `landscape mode`, `elevated privileges`,
   `The function as a whole`, `World class`, `as an AIX package`, `[Your first sandbox](…)`
   link labels and `YYYY-MM-DD`; each is a negative example in the rule tests.
+
+## Calibration
+
+Confidence values are fitted, so they need data. `calibration/` holds the scripts and their
+reports; the corpus itself is not committed (CC BY-SA text and model output that the scripts
+rebuild).
+
+### Corpus (built 2026-10-29)
+
+| Source | Files | What |
+|---|---|---|
+| Stack Exchange | 75 | Top-voted answers from 11 sites, created and last edited before 2022-11-30 |
+| Wikipedia | 71 | Lead sections of the last article revision before 2022-11-01, paragraph text only |
+| Codex models | 292 | `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (36-37 each) via `codex exec` |
+| Claude models | 146 | Opus, Sonnet and Haiku (48-49 each) via `claude -p` with a plain assistant system prompt |
+
+The human labels are historical: the texts were written or last edited before ChatGPT's
+release, which rules out most AI help but cannot prove none. Every model answered the same
+prompt as one human text (the Stack Exchange question, or "Write a short explanation of X for
+a general reader"), so topic does not separate the two sides.
+
+### Known confounds
+
+The two sides differ in more than tics. The Wikipedia leads have no
+Markdown at all (the fetch kept paragraph text), while most Claude answers use lists and bold.
+Codex answers are much shorter (median 81 words against 261). Prompts carried a "do not run
+commands" prefix, and Claude and Codex ran under different harnesses. Two rules
+(`bold-label-line`, `stock-section-label`) were found in this same corpus, so their held-out
+numbers are optimistic. An independent audit (October 2026) found these issues, so the results
+below sit next to a baseline that sees only length and layout.
+
+### What the corpus showed
+
+Share of files with at least one hit, Stack Exchange prompts only (people write Markdown
+there too):
+
+| Rule | Human | Claude | Codex |
+|---|---|---|---|
+| `x-not-y` | 8% | 39% | 21% |
+| `bold-lead-in` | 1% | 29% | 11% |
+| `bold-label-line` | 9% | 73% | 5% |
+| `em-dash` | 0% | 0% | 46% |
+| `rather-than` | 16% | 28% | 19% |
+| `not-x-but-y` | 8% | 3% | 1% |
+
+Most of the vocabulary and rhetoric rules (`delve`, `pivotal role`, `Moreover,`) almost never
+fire on these models (`ai-vocabulary`: 1-3% of answers), and ten rules never fired at all.
+The current tells are layout (bold labels, label-led lists, stock section names), `X, not Y`,
+and, for Codex, the em dash. Wikipedia uses em dashes too (21% of leads). People used
+`not-x-but-y` and `transition-opener` more than the models did. Semicolons separated nothing
+reliably (54% of Codex Q&A answers, 46% of Wikipedia leads), so they are not a rule.
+
+### Model
+
+Language models pick a pattern early and then keep copying it from their own context, so hits
+within one file are not independent. Each rule counts its opportunities `n` (sentences of three
+or more words, list items, headings, or Markdown blocks) and the opportunities `k` that hold at
+least one hit (three em dashes in one sentence occupy one sentence). Per rule and class:
+
+```text
+rate ~ Beta(a_c, b_c)        k ~ Binomial(n, rate)        c in {human, AI}
+evidence_r = ln P(k | AI) - ln P(k | human)      with each class writing like the other 2% of the time
+p          = sigmoid(SCALE * sum_r evidence_r + BIAS)
+```
+
+- The 2% contamination caps any one rule's evidence at ln 49 ≈ 3.9: no single tic is proof.
+- Evidence is kept monotone in `k` in the direction the rule leans. The fitted distributions
+  differ in how bursty each class is and can otherwise turn back at high counts.
+- Absences count: a long file that had many chances to use a tic and did not leans human.
+- Fitting is per rule over both classes, with the AI-over-human rate ratio given a prior of
+  N(1, 2) on the log scale (every rule is a documented sign, so an unseen rule leans AI a
+  little) and the two classes' burstiness tied together unless the data separates them.
+- A rule's strength in `tics rules` is the signed Jeffreys divergence between its AI and human
+  distributions over ten opportunities: how well it separates the two at any count.
+
+### Evaluation
+
+Nested cross-validation, grouped by prompt so a prompt's human and AI texts stay together: an
+inner 4-fold CV inside each of 5 outer training sets picks the two hyperparameters and gives
+the out-of-fold evidence that `SCALE` and `BIAS` are fitted on, exactly as the shipped model is
+built. Metrics weight human and AI files equally, thresholds use scores rounded as the CLI
+prints them, and intervals come from a 1,000-sample bootstrap over prompts. The baseline uses
+only word and opportunity counts, no rules.
+
+| Model | AUC (95% interval) | Balanced log-loss | Human ≥ 0.8 | AI ≥ 0.8 |
+|---|---|---|---|---|
+| tics | 0.808 (0.770-0.846) | 0.544 | 3% | 30% |
+| Length and structure only | 0.871 (0.830-0.910) | 0.463 | 7% | 39% |
+| tics, Stack Exchange only | 0.795 (0.742-0.846) | 0.538 | 3% | 32% |
+| Length and structure, Stack Exchange only | 0.744 (0.676-0.815) | 0.651 | 13% | 35% |
+
+Over the whole corpus, length and layout alone beat tics, mostly because the Wikipedia side
+has no Markdown and the Codex side is short. Where genre is matched (Stack Exchange), tics
+beats that baseline. By model, at 0.8: Opus 71%, Sonnet 80%, Haiku 58%, Codex models 5-19%.
+Per-finding and per-section confidences reuse the file-level calibration and have not been
+validated separately. A fair test of generalisation needs a new corpus with frozen rules,
+formatted human answers and length-matched prompts.
+
+To refit after changing rules, follow `calibration/README.md`, then copy the constants from
+`calibration/weights.json` into `src/score.rs`. Tests fail until the constants match and until
+Rust's evidence matches the fit's reference values in `calibration/parity.json`.
 
 ## Provenance
 

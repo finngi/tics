@@ -19,9 +19,17 @@ pub(crate) struct Cli {
     #[arg(value_name = "PATH")]
     pub(crate) paths: Vec<PathBuf>,
 
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = Format::Human, global = true)]
-    pub(crate) format: Format,
+    /// Output format [default: pretty in a terminal, compact when piped].
+    #[arg(long, value_enum, global = true)]
+    pub(crate) format: Option<Format>,
+
+    /// Shorthand for `--format json`.
+    #[arg(long, global = true, conflicts_with = "format")]
+    pub(crate) json: bool,
+
+    /// When to colour pretty output (`auto` respects `NO_COLOR` and pipes).
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto, global = true)]
+    pub(crate) color: ColorChoice,
 
     /// Print per-rule counts, total, words scanned and hits per 1,000 words.
     #[arg(long)]
@@ -38,18 +46,50 @@ pub(crate) struct Cli {
     /// Minimum severity to report.
     #[arg(long, value_enum, default_value_t = Severity::Info)]
     pub(crate) severity: Severity,
+
+    /// Only report findings at or above this confidence (0 to 1). A lone hit in a long file
+    /// scores low; many hits of the same kind score high.
+    #[arg(long, value_name = "N", default_value_t = 0.0, value_parser = parse_confidence, global = true)]
+    pub(crate) min_confidence: f64,
+}
+
+fn parse_confidence(text: &str) -> Result<f64, String> {
+    match text.parse::<f64>() {
+        Ok(value) if (0.0..=1.0).contains(&value) => Ok(value),
+        _ => Err(format!("`{text}` is not a number from 0 to 1")),
+    }
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// List the rules with id, category, severity, since, source and description.
     Rules,
+    /// Score each file from 0 to 1 for how AI-styled its tics make it look.
+    Score {
+        /// Files or directories to score; `-` or none reads stdin.
+        #[arg(value_name = "PATH")]
+        paths: Vec<PathBuf>,
+        /// Also score each heading section on its own.
+        #[arg(long)]
+        sections: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Format {
-    Human,
+    /// Findings grouped by file, with the line, the match underlined and a fix hint.
+    Pretty,
+    /// One line per finding, `path:line:col: rule: message «match» (confidence N)`.
+    #[value(alias = "human")]
+    Compact,
     Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ColorChoice {
+    Auto,
+    Always,
+    Never,
 }
 
 #[cfg(test)]
@@ -69,7 +109,7 @@ mod tests {
     fn defaults_read_stdin_in_human_format_at_info() -> Result<()> {
         let cli = Cli::try_parse_from(["tics"])?;
         assert!(cli.paths.is_empty() && cli.command.is_none() && !cli.summary);
-        assert_eq!((cli.format, cli.severity), (Format::Human, Severity::Info));
+        assert_eq!((cli.format, cli.severity), (None, Severity::Info));
         Ok(())
     }
 
@@ -85,7 +125,15 @@ mod tests {
     fn rules_subcommand_accepts_format_after_it() -> Result<()> {
         let cli = Cli::try_parse_from(["tics", "rules", "--format", "json"])?;
         assert!(matches!(cli.command, Some(Command::Rules)));
-        assert_eq!(cli.format, Format::Json);
+        assert_eq!(cli.format, Some(Format::Json));
+        Ok(())
+    }
+
+    #[test]
+    fn json_flag_is_global_and_conflicts_with_format() -> Result<()> {
+        let cli = Cli::try_parse_from(["tics", "score", "--json"])?;
+        assert!(cli.json);
+        assert!(Cli::try_parse_from(["tics", "--json", "--format", "pretty"]).is_err());
         Ok(())
     }
 

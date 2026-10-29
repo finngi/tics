@@ -33,6 +33,101 @@ fn stdout(output: &Output) -> Result<String> {
 }
 
 #[test]
+fn compact_output_and_piped_default_keep_the_exact_contract() -> Result<()> {
+    let input = "Use tabs, not spaces.\n";
+    let expected = "<stdin>:1:9: x-not-y: possible AI-writing tic: appositive contrast (`X, not Y`) «, not spaces» (confidence 0.83)\n";
+    for args in [&[][..], &["--format", "compact"][..]] {
+        let output = tics_with_stdin(args, input)?;
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(stdout(&output)?, expected);
+    }
+    Ok(())
+}
+
+#[test]
+fn json_contract_keeps_findings_summary_and_score_fields() -> Result<()> {
+    let input = "Use tabs, not spaces.\n";
+    let finding = serde_json::json!({
+        "path": "<stdin>",
+        "line": 1,
+        "column": 9,
+        "rule": "x-not-y",
+        "category": "contrast",
+        "severity": "warn",
+        "message": "possible AI-writing tic: appositive contrast (`X, not Y`)",
+        "matched": ", not spaces",
+        "confidence": 0.83
+    });
+    let plain: Value =
+        serde_json::from_str(&stdout(&tics_with_stdin(&["--format", "json"], input)?)?)?;
+    assert_eq!(plain, serde_json::json!([finding]));
+    let with_summary: Value = serde_json::from_str(&stdout(&tics_with_stdin(
+        &["--format", "json", "--summary"],
+        input,
+    )?)?)?;
+    assert_eq!(
+        with_summary,
+        serde_json::json!({
+            "findings": [finding],
+            "summary": {
+                "rules": {"x-not-y": 1},
+                "total": 1,
+                "words": 4,
+                "per_1000_words": 250.0
+            }
+        })
+    );
+    let score: Value = serde_json::from_str(&stdout(&tics_with_stdin(
+        &["score", "--format", "json"],
+        input,
+    )?)?)?;
+    assert_eq!(
+        score,
+        serde_json::json!([{
+            "path": "<stdin>",
+            "score": 0.81,
+            "words": 4,
+            "units": {"sentences": 1, "list_items": 0, "headings": 0, "blocks": 1},
+            "findings": 1,
+            "rules": {"x-not-y": 1},
+            "occupied": {"x-not-y": 1},
+            "sections": [{
+                "line": 1,
+                "title": null,
+                "units": {"sentences": 1, "list_items": 0, "headings": 0, "blocks": 1},
+                "findings": 1,
+                "score": 0.81
+            }]
+        }])
+    );
+    Ok(())
+}
+
+#[test]
+fn json_shorthand_matches_format_json() -> Result<()> {
+    let input = "Use tabs, not spaces.\n";
+    for (short, long) in [
+        (&["--json"][..], &["--format", "json"][..]),
+        (
+            &["--json", "--summary"][..],
+            &["--format", "json", "--summary"][..],
+        ),
+        (&["score", "--json"][..], &["score", "--format", "json"][..]),
+        (&["--json", "score"][..], &["--format", "json", "score"][..]),
+        (&["rules", "--json"][..], &["rules", "--format", "json"][..]),
+    ] {
+        let shorthand = tics_with_stdin(short, input)?;
+        let explicit = tics_with_stdin(long, input)?;
+        assert_eq!(shorthand.status.code(), explicit.status.code());
+        assert_eq!(shorthand.stdout, explicit.stdout);
+    }
+    let conflict = tics(&["--json", "--format", "pretty"])?;
+    assert_eq!(conflict.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("cannot be used with"));
+    Ok(())
+}
+
+#[test]
 fn sample_file_reports_exact_positions_and_exits_one() -> Result<()> {
     let output = tics(&["tests/fixtures/tics.md"])?;
     assert_eq!(output.status.code(), Some(1));
@@ -99,7 +194,15 @@ fn json_output_is_an_array_of_finding_objects() -> Result<()> {
     assert_eq!(
         keys,
         [
-            "category", "column", "line", "matched", "message", "path", "rule", "severity"
+            "category",
+            "column",
+            "confidence",
+            "line",
+            "matched",
+            "message",
+            "path",
+            "rule",
+            "severity"
         ]
     );
     assert_eq!(first["path"], "tests/fixtures/tics.md");
@@ -198,6 +301,26 @@ fn fresh_dir(name: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
+fn scanned_paths(root: &Path) -> Result<Vec<PathBuf>> {
+    let output = tics(&["score", "--json", root.to_str().context("UTF-8 temp dir")?])?;
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reports: Value = serde_json::from_str(&stdout(&output)?)?;
+    reports
+        .as_array()
+        .context("score reports")?
+        .iter()
+        .map(|report| {
+            let path = Path::new(report["path"].as_str().context("score path")?);
+            Ok(path.strip_prefix(root)?.to_path_buf())
+        })
+        .collect()
+}
+
 #[test]
 fn directories_are_walked_in_order_skipping_hidden_target_and_node_modules() -> Result<()> {
     let root = fresh_dir("walk")?;
@@ -206,6 +329,7 @@ fn directories_are_walked_in_order_skipping_hidden_target_and_node_modules() -> 
         "a.md",
         "c.mdx",
         "d.txt",
+        ".draft.md",
         "skip.rs",
         ".hidden/x.md",
         "target/x.md",
@@ -220,7 +344,124 @@ fn directories_are_walked_in_order_skipping_hidden_target_and_node_modules() -> 
         .filter_map(|line| line.split(':').next())
         .filter_map(|path| path.strip_prefix(root_arg))
         .collect();
-    assert_eq!(files, ["/a.md", "/b/two.markdown", "/c.mdx", "/d.txt"]);
+    assert_eq!(
+        files,
+        ["/.draft.md", "/a.md", "/b/two.markdown", "/c.mdx", "/d.txt"]
+    );
+    Ok(())
+}
+
+#[test]
+fn gitignore_patterns_and_nested_overrides_filter_directory_walks() -> Result<()> {
+    let root = fresh_dir("gitignore-patterns")?;
+    write(
+        &root.join(".gitignore"),
+        "/root-only.md\n**/*.generated.md\n*.txt\n!keep.txt\nbook/\nblocked/\n!blocked/keep.md\n\\#draft.md\n\\!draft.md\n",
+    )?;
+    write(
+        &root.join("docs/.gitignore"),
+        "!keep.generated.md\nlocal.md\n",
+    )?;
+    for name in [
+        "z.md",
+        "a.md",
+        "docs/guide.md",
+        "docs/root-only.md",
+        "docs/keep.generated.md",
+        "keep.txt",
+        "drop.txt",
+        "root-only.md",
+        "draft.generated.md",
+        "docs/drop.generated.md",
+        "docs/local.md",
+        "blocked/keep.md",
+        "#draft.md",
+        "!draft.md",
+    ] {
+        write(&root.join(name), "The cache is empty.\n")?;
+    }
+    // An ignored generated directory is pruned before any files are read.
+    std::fs::create_dir_all(root.join("docs/book"))?;
+    std::fs::write(root.join("docs/book/index.md"), [0xff])?;
+    assert_eq!(
+        scanned_paths(&root)?,
+        [
+            "a.md",
+            "docs/guide.md",
+            "docs/keep.generated.md",
+            "docs/root-only.md",
+            "keep.txt",
+            "z.md",
+        ]
+        .map(PathBuf::from)
+    );
+    Ok(())
+}
+
+#[test]
+fn parent_gitignore_applies_to_relative_directory_arguments() -> Result<()> {
+    let root = fresh_dir("gitignore-parent")?;
+    write(&root.join(".gitignore"), "/docs/book/\n*.generated.md\n")?;
+    for name in [
+        "docs/book/index.md",
+        "docs/draft.generated.md",
+        "docs/guide.md",
+    ] {
+        write(&root.join(name), "The cache is empty.\n")?;
+    }
+    let relative = root
+        .join("docs")
+        .strip_prefix(env!("CARGO_MANIFEST_DIR"))?
+        .to_path_buf();
+    assert_eq!(scanned_paths(&relative)?, [PathBuf::from("guide.md")]);
+    Ok(())
+}
+
+#[test]
+fn gitignore_negations_do_not_restore_hard_skipped_directories() -> Result<()> {
+    let root = fresh_dir("gitignore-hard-skips")?;
+    write(&root.join(".gitignore"), "!**/\n!**/*.md\n")?;
+    for name in ["a.md", ".hidden/x.md", "target/x.md", "node_modules/x.md"] {
+        write(&root.join(name), "The cache is empty.\n")?;
+    }
+    assert_eq!(scanned_paths(&root)?, [PathBuf::from("a.md")]);
+    Ok(())
+}
+
+#[test]
+fn explicitly_named_ignored_files_and_skipped_directories_are_scanned() -> Result<()> {
+    let root = fresh_dir("gitignore-explicit")?;
+    write(&root.join(".gitignore"), "*\n")?;
+    for name in [
+        "draft.custom",
+        ".hidden/a.md",
+        "target/a.md",
+        "node_modules/a.md",
+    ] {
+        write(&root.join(name), "We delve.\n")?;
+    }
+    let file = root.join("draft.custom");
+    let output = tics(&["--select", "ai-vocabulary", file.to_str().context("UTF-8")?])?;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout(&output)?.starts_with(&format!("{}:1:4:", file.display())));
+    // Naming a directory bypasses its hard skip; its own ignore rules still apply.
+    write(&root.join(".gitignore"), "")?;
+    for name in [".hidden", "target", "node_modules"] {
+        assert_eq!(scanned_paths(&root.join(name))?, [PathBuf::from("a.md")]);
+    }
+    Ok(())
+}
+
+#[test]
+fn only_gitignore_files_add_new_directory_filters() -> Result<()> {
+    let root = fresh_dir("gitignore-scope")?;
+    write(&root.join(".ignore"), "a.md\n")?;
+    write(&root.join(".git/info/exclude"), "b.md\n")?;
+    write(&root.join(".gitignore"), "c.md\n")?;
+    for name in ["a.md", "b.md", "c.md"] {
+        write(&root.join(name), "The cache is empty.\n")?;
+    }
+    assert_eq!(scanned_paths(&root)?, ["a.md", "b.md"].map(PathBuf::from));
     Ok(())
 }
 
@@ -262,7 +503,7 @@ fn a_byte_order_mark_does_not_hide_front_matter_or_shift_columns() -> Result<()>
     )?;
     assert_eq!(
         stdout(&output)?,
-        "<stdin>:4:9: x-not-y: possible AI-writing tic: appositive contrast (`X, not Y`) «, not spaces»\n"
+        "<stdin>:4:9: x-not-y: possible AI-writing tic: appositive contrast (`X, not Y`) «, not spaces» (confidence 0.83)\n"
     );
     Ok(())
 }
@@ -276,9 +517,17 @@ fn rules_lists_every_rule_in_both_formats() -> Result<()> {
     for rule in rules {
         let id = rule["id"].as_str().context("id")?;
         assert!(human.lines().any(|line| line.starts_with(id)), "{id}");
-        for field in ["category", "severity", "since", "source", "description"] {
+        for field in [
+            "category",
+            "severity",
+            "since",
+            "unit",
+            "source",
+            "description",
+        ] {
             assert!(rule[field].is_string(), "{id} lacks {field}");
         }
+        assert!(rule["strength"].is_f64(), "{id} lacks strength");
     }
     Ok(())
 }
@@ -300,11 +549,12 @@ fn readme_rule_table_matches_tics_rules() -> Result<()> {
                 .unwrap_or_default()
                 .replace('_', " ");
             format!(
-                "| `{}` | {} | {} | {} | {} | [{label}]({source}) |",
+                "| `{}` | {} | {} | {} | {:+.2} | {} | [{label}]({source}) |",
                 field("id"),
                 field("category"),
                 field("severity"),
                 field("since"),
+                rule["strength"].as_f64().unwrap_or_default(),
                 field("description"),
             )
         })
@@ -320,5 +570,113 @@ fn readme_rule_table_matches_tics_rules() -> Result<()> {
         .filter(|line| line.starts_with("| `"))
         .collect();
     assert_eq!(rows, expected);
+    Ok(())
+}
+
+#[test]
+fn min_confidence_hides_weak_findings_and_sets_the_exit_code() -> Result<()> {
+    let weak = "One sentence uses tabs, not spaces, in a long and otherwise plain paragraph about \
+                build settings, compiler flags, cache directories, network timeouts, retry \
+                limits, log rotation, file permissions and the order in which services start.\n";
+    let all = tics_with_stdin(&[], weak)?;
+    assert_eq!(all.status.code(), Some(1));
+    let strict = tics_with_stdin(&["--min-confidence", "0.9"], weak)?;
+    assert_eq!(strict.status.code(), Some(0));
+    assert_eq!(stdout(&strict)?, "");
+    let bad = tics_with_stdin(&["--min-confidence", "2"], weak)?;
+    assert_eq!(bad.status.code(), Some(2));
+    Ok(())
+}
+
+#[test]
+fn score_rates_each_file_and_exits_zero() -> Result<()> {
+    let output = tics(&["score", "tests/fixtures/tics.md", "tests/fixtures/clean.md"])?;
+    assert_eq!(output.status.code(), Some(0));
+    let text = stdout(&output)?;
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(
+        lines[0].starts_with("tests/fixtures/tics.md: 0.97 (21 findings in 86 words)"),
+        "{text}"
+    );
+    assert!(
+        lines[1].starts_with("tests/fixtures/clean.md: 0.43 (0 findings"),
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout(&tics(&[
+        "score",
+        "--format",
+        "json",
+        "tests/fixtures/tics.md",
+    ])?)?)?;
+    assert!(json[0]["score"].as_f64().is_some_and(|score| score > 0.9));
+    assert_eq!(json[0]["units"]["list_items"], 2);
+    assert_eq!(
+        json[0]["sections"][0]["title"],
+        "Getting Started With The Platform"
+    );
+    let sections = stdout(&tics(&["score", "--sections", "tests/fixtures/tics.md"])?)?;
+    assert!(
+        sections.contains("\n  5: 0.97 Getting Started With The Platform (21 findings)\n"),
+        "{sections}"
+    );
+    Ok(())
+}
+
+#[test]
+fn hidden_or_proseless_text_gets_no_findings_and_no_score() -> Result<()> {
+    for input in [
+        "<!--\n**Why:** because\nShort answer: yes\n-->\n",
+        "",
+        "```\ncode only\n```\n",
+        "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n",
+    ] {
+        let findings = tics_with_stdin(&[], input)?;
+        assert_eq!(findings.status.code(), Some(0), "{input:?}");
+        let score = stdout(&tics_with_stdin(&["score"], input)?)?;
+        assert!(score.starts_with("<stdin>: n/a"), "{input:?}: {score}");
+    }
+    Ok(())
+}
+
+#[test]
+fn wrapping_a_paragraph_does_not_change_its_score() -> Result<()> {
+    let sentences: Vec<String> = (0..40)
+        .map(|n| format!("The service restarts after config change number {n}."))
+        .collect();
+    let one_line = stdout(&tics_with_stdin(&["score"], &(sentences.join(" ") + "\n"))?)?;
+    let wrapped = stdout(&tics_with_stdin(
+        &["score"],
+        &(sentences.join("\n") + "\n"),
+    )?)?;
+    assert_eq!(one_line, wrapped);
+    Ok(())
+}
+
+#[test]
+fn several_hits_in_one_sentence_occupy_it_once() -> Result<()> {
+    let text = "It works — mostly — fast — always. The cache is warm. The tests pass.\n";
+    let json: Value = serde_json::from_str(&stdout(&tics_with_stdin(
+        &["score", "--format", "json"],
+        text,
+    )?)?)?;
+    assert_eq!(json[0]["rules"]["em-dash"], 3);
+    assert_eq!(json[0]["occupied"]["em-dash"], 1);
+    assert_eq!(json[0]["units"]["sentences"], 3);
+    Ok(())
+}
+
+#[test]
+fn readme_confidence_example_matches() -> Result<()> {
+    let output = tics(&[
+        "score",
+        "tests/fixtures/notes.md",
+        "tests/fixtures/answer.md",
+    ])?;
+    let text = stdout(&output)?;
+    let readme = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))?;
+    for line in text.lines() {
+        assert!(readme.contains(line), "README lacks {line:?}");
+    }
     Ok(())
 }
