@@ -1,6 +1,6 @@
-human/
-ai/
+/human
+/ai
+/prompts.jsonl
 .cache/
-prompts.jsonl
 doc_hits.json
 failures.log

@@ -1,6 +1,6 @@
 # Design
 
-`tics` is one binary crate (about 3,100 lines of Rust, roughly half of them tests). The pipeline:
+`tics` is one binary crate (about 4,200 lines of Rust, about 40% of them tests). The pipeline:
 
 ```text
 inputs.rs    paths -> files (sorted walk) or stdin
@@ -33,7 +33,7 @@ skip rules are three names), `once_cell`/`LazyLock` (rules are compiled once per
 
 ## Skipping Markdown with exact positions
 
-**Decision: pulldown-cmark plus a byte-preserving mask.** For each prose block the engine sees
+The decision was pulldown-cmark plus a byte-preserving mask. For each prose block the engine sees
 the original source slice with every non-prose character replaced by as many spaces as it
 has bytes (newlines kept). An offset in the masked text is the offset in the file, so
 line/column come from one binary search over line starts; there is no mapping table to get
@@ -126,7 +126,7 @@ first-line columns match what an editor shows.
 
 - `src/rule_tests.rs`: a table with, per rule, sentences it must flag and realistic technical
   prose it must not flag. One test asserts every rule has ≥ 2 of each; another runs them all
-  and reports every miss and false positive at once. 28 rules, 69 positive and 71 negative
+  and reports every miss and false positive at once. 30 rules, each with at least two positive and two negative
   examples.
 - Unit tests per module: masking (fences of both kinds and lengths, indented code vs lazy
   continuation, inline code, URLs, autolinks, link destinations, front matter position,
@@ -248,76 +248,104 @@ False positives seen and how they were handled:
 
 ## Calibration
 
-Confidence values are fitted, so they need data. `calibration/` holds the scripts; the corpus
-itself is not committed, because it is CC BY-SA text and model output that anyone can rebuild.
+Confidence values are fitted, so they need data. `calibration/` holds the scripts and their
+reports; the corpus itself is not committed (CC BY-SA text and model output that the scripts
+rebuild).
 
 ### Corpus (built 2026-10-29)
 
-| Source | Documents | What |
+| Source | Files | What |
 |---|---|---|
-| Stack Exchange | 72 | Top-voted answers from 11 sites, written and last edited before 2022-11-30 |
-| Wikipedia | 74 | Article lead sections from the last revision before 2022-11-01 |
+| Stack Exchange | 75 | Top-voted answers from 11 sites, created and last edited before 2022-11-30 |
+| Wikipedia | 71 | Lead sections of the last article revision before 2022-11-01, paragraph text only |
 | Codex models | 292 | `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (36-37 each) via `codex exec` |
 | Claude models | 146 | Opus, Sonnet and Haiku (48-49 each) via `claude -p` with a plain assistant system prompt |
 
-The human texts predate ChatGPT, so none of them can be AI-assisted. Each model answered the
-same question as the human text (the Stack Exchange question, or "Write a short explanation of
-X for a general reader"), so topic does not separate the two sides.
+The human labels are historical: the texts were written or last edited before ChatGPT's
+release, which rules out most AI help but cannot prove none. Every model answered the same
+prompt as one human text (the Stack Exchange question, or "Write a short explanation of X for
+a general reader"), so topic does not separate the two sides.
+
+### Known confounds
+
+The two sides differ in more than tics. The Wikipedia leads have no
+Markdown at all (the fetch kept paragraph text), while most Claude answers use lists and bold.
+Codex answers are much shorter (median 81 words against 261). Prompts carried a "do not run
+commands" prefix, and Claude and Codex ran under different harnesses. Two rules
+(`bold-label-line`, `stock-section-label`) were found in this same corpus, so their held-out
+numbers are optimistic. An independent audit (October 2026) found these issues, so the results
+below sit next to a baseline that sees only length and layout.
 
 ### What the corpus showed
 
-Share of documents with at least one hit. Stack Exchange only, where people also write lists
-and Markdown:
+Share of files with at least one hit, Stack Exchange prompts only (people write Markdown
+there too):
 
-| Signal | Human | Claude | Codex |
+| Rule | Human | Claude | Codex |
 |---|---|---|---|
 | `x-not-y` | 8% | 39% | 21% |
-| `bold-lead-in`, two or more | 4% | 63% | 29% |
-| bold label on its own line | 7% | 68% | 3% |
+| `bold-lead-in` | 1% | 29% | 11% |
+| `bold-label-line` | 9% | 73% | 5% |
 | `em-dash` | 0% | 0% | 46% |
 | `rather-than` | 16% | 28% | 19% |
 | `not-x-but-y` | 8% | 3% | 1% |
 
 Most of the vocabulary and rhetoric rules (`delve`, `pivotal role`, `Moreover,`) almost never
-fire on these models: `ai-vocabulary` hit 1-3% of answers. Their tells are now structural
-(bold labels, label-led lists, stock section names) plus `X, not Y` and, for Codex, the em
-dash. Wikipedia leads use em dashes too (21%), which is why that rule needs a weight and not a
-yes or no. `not-x-but-y` and `transition-opener` were more common in the human text, so they
-get no weight. Two rules came out of this: `bold-label-line` (71% of Claude answers, 5% of
-human texts) and `stock-section-label` (33% of Claude answers, no human texts).
-
-The corpus also turned up patterns that are not rules, because people use them as much in
-other genres: semicolons (54% of Codex Q&A answers, but 46% of Wikipedia leads) and phrases
-such as `rule of thumb` or `in practice`.
+fire on these models (`ai-vocabulary`: 1-3% of answers), and ten rules never fired at all.
+The current tells are layout (bold labels, label-led lists, stock section names), `X, not Y`,
+and, for Codex, the em dash. Wikipedia uses em dashes too (21% of leads). People used
+`not-x-but-y` and `transition-opener` more than the models did. Semicolons separated nothing
+reliably (54% of Codex Q&A answers, 46% of Wikipedia leads), so they are not a rule.
 
 ### Model
 
-For rule `r` with `tf` hits in a file of `words` words:
+Language models pick a pattern early and then keep copying it from their own context, so hits
+within one file are not independent. Each rule counts its opportunities `n` (sentences of three
+or more words, list items, headings, or Markdown blocks) and the opportunities `k` that hold at
+least one hit (three em dashes in one sentence occupy one sentence). Per rule and class:
 
 ```text
-x_r = tf * (k1 + 1) / (tf + k1 * (1 - b + b * words / avg_words))      (BM25 saturation)
-p   = sigmoid(bias + sum_r w_r * x_r)
+rate ~ Beta(a_c, b_c)        k ~ Binomial(n, rate)        c in {human, AI}
+evidence_r = ln P(k | AI) - ln P(k | human)      with each class writing like the other 2% of the time
+p          = sigmoid(SCALE * sum_r evidence_r + BIAS)
 ```
 
-The weights come from a logistic regression with weights kept at zero or above, an L2 penalty
-pulling each weight towards 1.0 (so a rule the corpus never saw keeps a middling weight), and
-classes weighted to even odds. `k1` and `b` were picked by grouped 5-fold cross-validation,
-where all answers to one question stay in the same fold: `k1 = 2.0`, `b = 0.75`.
+- The 2% contamination caps any one rule's evidence at ln 49 ≈ 3.9: no single tic is proof.
+- Evidence is kept monotone in `k` in the direction the rule leans. The fitted distributions
+  differ in how bursty each class is and can otherwise turn back at high counts.
+- Absences count: a long file that had many chances to use a tic and did not leans human.
+- Fitting is per rule over both classes, with the AI-over-human rate ratio given a prior of
+  N(1, 2) on the log scale (every rule is a documented sign, so an unseen rule leans AI a
+  little) and the two classes' burstiness tied together unless the data separates them.
+- A rule's strength in `tics rules` is the signed Jeffreys divergence between its AI and human
+  distributions over ten opportunities: how well it separates the two at any count.
 
-Held-out results (AUC 0.73):
+### Evaluation
 
-| Group | Score ≥ 0.5 | Score ≥ 0.8 |
-|---|---|---|
-| Human | 18% | 3% |
-| Claude Opus / Sonnet | 96% / 96% | 86% / 90% |
-| Claude Haiku | 73% | 52% |
-| Codex models | 22-78% | 0-22% |
+Nested cross-validation, grouped by prompt so a prompt's human and AI texts stay together: an
+inner 4-fold CV inside each of 5 outer training sets picks the two hyperparameters and gives
+the out-of-fold evidence that `SCALE` and `BIAS` are fitted on, exactly as the shipped model is
+built. Metrics weight human and AI files equally, thresholds use scores rounded as the CLI
+prints them, and intervals come from a 1,000-sample bootstrap over prompts. The baseline uses
+only word and opportunity counts, no rules.
 
-Codex answers are short (a median of 81 words, against 265 for the human texts) and often
-have no tics at all, so tics cannot tell them from human text. A score measures tics; it cannot say who wrote a file.
+| Model | AUC (95% interval) | Balanced log-loss | Human ≥ 0.8 | AI ≥ 0.8 |
+|---|---|---|---|---|
+| tics | 0.808 (0.770-0.846) | 0.544 | 3% | 30% |
+| Length and structure only | 0.871 (0.830-0.910) | 0.463 | 7% | 39% |
+| tics, Stack Exchange only | 0.795 (0.742-0.846) | 0.538 | 3% | 32% |
+| Length and structure, Stack Exchange only | 0.744 (0.676-0.815) | 0.651 | 13% | 35% |
 
-To refit after changing rules, see `calibration/README.md`, then copy the constants from
-`calibration/weights.json` into `src/score.rs`. A test fails until they match.
+Over the whole corpus, length and layout alone beat tics, mostly because the Wikipedia side
+has no Markdown and the Codex side is short. Where genre is matched (Stack Exchange), tics
+beats that baseline. By model, at 0.8: Opus 71%, Sonnet 80%, Haiku 58%, Codex models 5-19%.
+Per-finding and per-section confidences reuse the file-level calibration and have not been
+validated separately. A fair test of generalisation needs a new corpus with frozen rules,
+formatted human answers and length-matched prompts.
+
+To refit after changing rules, follow `calibration/README.md`, then copy the constants from
+`calibration/weights.json` into `src/score.rs`. Tests fail until the constants match and until
+Rust's evidence matches the fit's reference values in `calibration/parity.json`.
 
 ## Provenance
 

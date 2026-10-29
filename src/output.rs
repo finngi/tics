@@ -6,8 +6,9 @@ use std::fmt::Write as _;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::engine::{FileReport, Finding};
+use crate::engine::{FileReport, Finding, Section};
 use crate::rules::{Category, Rule, Severity};
+use crate::score::{self, Unit, Units};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct Summary {
@@ -100,6 +101,11 @@ struct RuleInfo {
     category: Category,
     severity: Severity,
     since: &'static str,
+    /// What one opportunity is for this rule.
+    unit: Unit,
+    /// How well the rule separates AI from human text (signed Jeffreys divergence over ten
+    /// opportunities, see `score.rs`); negative means people use the pattern more.
+    strength: f64,
     source: &'static str,
     description: &'static str,
 }
@@ -110,11 +116,12 @@ pub(crate) fn rules_human(rules: &[Rule]) -> String {
     for rule in rules {
         let _ = writeln!(
             out,
-            "{:<width$}  {:<10}  {:<4}  {}  {}  {}",
+            "{:<width$}  {:<10}  {:<4}  {}  {:+.2}  {}  {}",
             rule.id,
             rule.category.as_str(),
             rule.severity.as_str(),
             rule.since,
+            score::strength(rule.id),
             rule.description,
             rule.source
         );
@@ -130,6 +137,8 @@ pub(crate) fn rules_json(rules: &[Rule]) -> Result<String> {
             category: rule.category,
             severity: rule.severity,
             since: rule.since,
+            unit: rule.unit(),
+            strength: score::strength(rule.id),
             source: rule.source,
             description: rule.description,
         })
@@ -146,6 +155,8 @@ mod tests {
     use super::{Summary, density, human, json, scores_human, scores_json};
     use crate::engine::{FileReport, Finding};
     use crate::rules::{Category, Severity};
+    use crate::score::Units;
+    use std::collections::BTreeMap;
 
     fn finding(rule: &'static str) -> Finding {
         Finding {
@@ -210,7 +221,10 @@ mod tests {
         FileReport {
             findings: rules.iter().map(|rule| finding(rule)).collect(),
             words: 120,
-            score: 0.87,
+            units: Units::default(),
+            occupied: BTreeMap::new(),
+            score: Some(0.87),
+            sections: Vec::new(),
         }
     }
 
@@ -224,7 +238,7 @@ mod tests {
             ("b.md".to_owned(), report(&[])),
         ];
         assert_eq!(
-            scores_human(&reports),
+            scores_human(&reports, false),
             "a.md: 0.87 (3 findings in 120 words): em-dash ×2, x-not-y ×1\n\
              b.md: 0.87 (0 findings in 120 words)\n"
         );
@@ -241,6 +255,11 @@ mod tests {
     }
 }
 
+/// A score to two decimals, or `n/a` for a file or section with no prose.
+fn shown(score: Option<f64>) -> String {
+    score.map_or_else(|| "n/a".to_owned(), |score| format!("{score:.2}"))
+}
+
 /// Rules with the most hits in a report, most first, for the score line.
 fn top_rules(report: &FileReport) -> Vec<(&'static str, usize)> {
     let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
@@ -252,8 +271,9 @@ fn top_rules(report: &FileReport) -> Vec<(&'static str, usize)> {
     top
 }
 
-/// One line per file: score, findings and words, and the rules behind the score.
-pub(crate) fn scores_human(reports: &[(String, FileReport)]) -> String {
+/// One line per file: score, findings and words, and the rules behind the score. With
+/// `sections`, an indented line per heading section follows.
+pub(crate) fn scores_human(reports: &[(String, FileReport)], sections: bool) -> String {
     let mut out = String::new();
     for (path, report) in reports {
         let rules: Vec<String> = top_rules(report)
@@ -265,13 +285,34 @@ pub(crate) fn scores_human(reports: &[(String, FileReport)]) -> String {
         let noun = if count == 1 { "finding" } else { "findings" };
         let _ = write!(
             out,
-            "{path}: {:.2} ({count} {noun} in {} words)",
-            report.score, report.words
+            "{path}: {} ({count} {noun} in {} words)",
+            shown(report.score),
+            report.words
         );
         if !rules.is_empty() {
             let _ = write!(out, ": {}", rules.join(", "));
         }
         out.push('\n');
+        if sections {
+            for section in &report.sections {
+                let title = section
+                    .title
+                    .as_deref()
+                    .unwrap_or("(before the first heading)");
+                let _ = writeln!(
+                    out,
+                    "  {}: {} {title} ({} {})",
+                    section.line,
+                    shown(section.score),
+                    section.findings,
+                    if section.findings == 1 {
+                        "finding"
+                    } else {
+                        "findings"
+                    }
+                );
+            }
+        }
     }
     out
 }
@@ -279,10 +320,15 @@ pub(crate) fn scores_human(reports: &[(String, FileReport)]) -> String {
 #[derive(Serialize)]
 struct FileScore<'a> {
     path: &'a str,
-    score: f64,
+    /// `null` for a file with no prose.
+    score: Option<f64>,
     words: usize,
+    units: Units,
     findings: usize,
     rules: BTreeMap<&'static str, usize>,
+    /// Per rule, opportunities holding at least one hit (the model's `k`).
+    occupied: &'a BTreeMap<&'static str, usize>,
+    sections: &'a [Section],
 }
 
 /// A JSON array with one object per file.
@@ -293,8 +339,11 @@ pub(crate) fn scores_json(reports: &[(String, FileReport)]) -> Result<String> {
             path,
             score: report.score,
             words: report.words,
+            units: report.units,
+            occupied: &report.occupied,
             findings: report.findings.len(),
             rules: top_rules(report).into_iter().collect(),
+            sections: &report.sections,
         })
         .collect();
     let mut text = serde_json::to_string_pretty(&scores).context("serialising scores as JSON")?;

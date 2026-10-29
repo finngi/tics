@@ -6,6 +6,8 @@
 
 use serde::Serialize;
 
+use crate::score::Unit;
+
 const SIGNS: &str = "https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing";
 const WORDS: &str = "https://en.wikipedia.org/wiki/Wikipedia:Manual_of_Style/Words_to_watch";
 const BUZZ: &str = "https://en.wikipedia.org/wiki/Wikipedia:Marketing_buzzspeak";
@@ -95,6 +97,9 @@ pub(crate) enum Detector {
     Heading(fn(&str) -> bool),
     /// Runs on the whole source with only code and front matter removed, so it sees URLs.
     Raw(&'static str),
+    /// Runs on the text a reader sees, one Markdown block per line start: code, HTML
+    /// (comments included) and front matter removed, Markdown markup such as `**` kept.
+    Block(&'static str),
 }
 
 #[derive(Debug)]
@@ -512,7 +517,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_2_0,
         source: SIGNS,
         description: "paragraph led by a bold label, or a bold line used as a heading (`**Why:** …`)",
-        detector: Detector::Raw(
+        detector: Detector::Block(
             r"(?m)^[\x20\t]{0,3}(?:
                 (?:\*\*|__)[^*_\n]{1,60}?[:.]?(?:\*\*|__)[:.]?[\x20\t]*$
               | (?:\*\*|__)[^*_\n]{1,60}?[:.](?:\*\*|__)[\x20\t]
@@ -527,7 +532,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_2_0,
         source: SIGNS,
         description: "stock section label (`Why it matters`, `How it works`, `Short answer:`, `TL;DR`)",
-        detector: Detector::Raw(concat!(
+        detector: Detector::Block(concat!(
             r"(?m)^[\x20\t]{0,3}(?:\#{1,6}[\x20\t]+(?:\*\*|__)?|\*\*|__)",
             stock_label!(),
             r"|(?m)^[\x20\t]{0,3}",
@@ -545,6 +550,18 @@ pub(crate) static RULES: &[Rule] = &[
         detector: Detector::Heading(is_title_case),
     },
 ];
+
+impl Rule {
+    /// What one opportunity for this rule is, for the confidence model.
+    pub(crate) fn unit(&self) -> Unit {
+        match self.detector {
+            Detector::Text { .. } | Detector::Pair { .. } => Unit::Sentence,
+            Detector::ListItem(_) => Unit::ListItem,
+            Detector::Heading(_) => Unit::Heading,
+            Detector::Raw(_) | Detector::Block(_) => Unit::Block,
+        }
+    }
+}
 
 /// Looks up a rule by its id.
 pub(crate) fn by_id(id: &str) -> Option<&'static Rule> {

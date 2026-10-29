@@ -12,14 +12,18 @@ Rule ids are stable; a rule's `since` version is the release that added it.
 
 ### Added
 
-- A confidence from 0 to 1 on every finding, in human and JSON output. Each rule's hit count
-  is saturated and length-normalised as in BM25, then weighted by a logistic model fitted on
-  a corpus of human and AI text (DESIGN.md, "Calibration").
+- A confidence from 0 to 1 on every finding, in human and JSON output, from a beta-binomial
+  likelihood-ratio model fitted on a corpus of human and AI text (DESIGN.md, "Calibration").
+  A rule's hits are counted as occupied opportunities (sentences, list items, headings or
+  Markdown blocks), so repetition and file length are handled by the model.
 - `--min-confidence N` to report only findings at or above `N`.
-- `tics score [PATH]...`: one score per file, with the rules behind it (human or JSON).
+- `tics score [PATH]...`: one score per file with the rules behind it, `--sections` for one
+  score per heading section, and `units`, `occupied` and `sections` in JSON. Files with no
+  prose get no score.
+- A signed strength per rule in `tics rules` and the README table.
 - Rules `bold-label-line` (a paragraph led by a bold label, or a bold line used as a heading)
   and `stock-section-label` (`Why it matters`, `How it works`, `Short answer:`, `TL;DR`).
-- `calibration/`: the scripts that build the corpus and fit the weights, with their reports.
+- `calibration/`: scripts that build the corpus and fit the model, with their reports.
 
 ### Changed
 

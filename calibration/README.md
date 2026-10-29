@@ -11,10 +11,13 @@ python3 analyze.py --tics ../target/release/tics > report.md
 uv run --with numpy --with scipy python fit.py --tics ../target/release/tics > fit-report.md
 ```
 
-`fit.py` writes `weights.json`. Copy its values into `src/score.rs`; the
-`constants_match_the_calibration_output` test checks them.
+`fit.py` runs nested, prompt-grouped cross-validation, then writes `weights.json` and
+`parity.json`. Copy the constants into `src/score.rs`; tests check them against
+`weights.json` and Rust's evidence against `parity.json`. `--predictions FILE` also writes the
+held-out score of every file.
 
 `report.md` (hit rates per rule, group and model, plus phrases models overuse) and
-`fit-report.md` (cross-validation and final weights) are the outputs from the 2026-10-29 run.
+`fit-report.md` (held-out results against a length-and-structure baseline, and the final
+model) are the outputs from the 2026-10-29 run.
 The corpus itself is left out of the repository: the human text is CC BY-SA from Stack
 Exchange and Wikipedia, and `prompts.jsonl` keeps each source URL for attribution.

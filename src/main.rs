@@ -47,7 +47,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     let selected = select_rules(cli)?;
     let compiled = engine::compile(&selected)?;
     let paths = match &cli.command {
-        Some(Command::Score { paths }) => paths,
+        Some(Command::Score { paths, .. }) => paths,
         _ => &cli.paths,
     };
     let mut reports = Vec::new();
@@ -56,9 +56,9 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         let report = engine::scan(&path, &text, inputs::mode_of(&input), &compiled);
         reports.push((path, report));
     }
-    if matches!(cli.command, Some(Command::Score { .. })) {
+    if let Some(Command::Score { sections, .. }) = cli.command {
         let text = match cli.format {
-            Format::Human => output::scores_human(&reports),
+            Format::Human => output::scores_human(&reports, sections),
             Format::Json => output::scores_json(&reports)?,
         };
         write_stdout(&text)?;

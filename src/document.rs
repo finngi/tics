@@ -51,6 +51,12 @@ pub(crate) struct Document {
     pub(crate) code_free: String,
     /// Byte offset of each Markdown list item's marker.
     pub(crate) list_items: Vec<usize>,
+    /// The source with front matter, code and HTML (comments included) blanked, offsets kept:
+    /// what a reader sees as text, still with Markdown markup such as `**`.
+    pub(crate) visible: String,
+    /// Byte offset of the first line of each block a reader would see as one: a paragraph,
+    /// heading or list item. Table rows and blank-line runs are not blocks.
+    pub(crate) blocks: Vec<usize>,
 }
 
 pub(crate) fn parse(source: &str, mode: Mode) -> Document {
@@ -81,6 +87,8 @@ fn parse_markdown(source: &str) -> Document {
     let mut code: Vec<Range<usize>> = Vec::new();
     let mut directives = Vec::new();
     let mut list_items = Vec::new();
+    let mut html: Vec<Range<usize>> = Vec::new();
+    let mut tables: Vec<Range<usize>> = Vec::new();
     for (event, range) in Parser::new_ext(&body, options).into_offset_iter() {
         match event {
             Event::Start(tag) => {
@@ -99,6 +107,7 @@ fn parse_markdown(source: &str) -> Document {
                     } => opaque_depth += 1,
                     Tag::Heading { .. } => in_heading = true,
                     Tag::Item => list_items.push(range.start),
+                    Tag::Table(_) => tables.push(range),
                     _ => {}
                 }
             }
@@ -119,8 +128,9 @@ fn parse_markdown(source: &str) -> Document {
             }
             Event::Text(_) if opaque_depth == 0 => collector.ranges.push(range),
             Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_) => code.push(range),
-            Event::Html(html) | Event::InlineHtml(html) => {
-                directives.extend(parse_directives(&html, range.start));
+            Event::Html(text) | Event::InlineHtml(text) => {
+                directives.extend(parse_directives(&text, range.start));
+                html.push(range);
             }
             _ => {}
         }
@@ -128,12 +138,57 @@ fn parse_markdown(source: &str) -> Document {
     collector.flush(&body, in_heading);
     code.sort_by_key(|range| range.start);
     let code_free = mask(&body, 0..body.len(), &code, Keep::Outside);
+    let mut hidden = code;
+    hidden.extend(html);
+    hidden.sort_by_key(|range| range.start);
+    let visible = mask(&body, 0..body.len(), &merge(hidden), Keep::Outside);
+    let blocks = block_starts(&visible, &tables);
     Document {
         segments: collector.segments,
         directives,
         code_free,
         list_items,
+        visible,
+        blocks,
     }
+}
+
+/// Sorted ranges with overlaps joined, as `mask` expects.
+fn merge(ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => merged.push(range),
+        }
+    }
+    merged
+}
+
+/// Offsets of lines that start a block: non-blank lines after a blank line (or at the top),
+/// plus list-item and heading lines, outside tables. Wrapping a paragraph adds no blocks.
+fn block_starts(visible: &str, tables: &[Range<usize>]) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut previous_blank = true;
+    let mut offset = 0;
+    for line in visible.split_inclusive('\n') {
+        let text = line.trim();
+        let in_table = tables.iter().any(|table| table.contains(&offset));
+        if !text.is_empty() && !in_table {
+            let marker = text.starts_with('#')
+                || text.starts_with(['-', '*', '+'])
+                    && text.chars().nth(1).is_some_and(char::is_whitespace)
+                || text.split_once(['.', ')']).is_some_and(|(number, _)| {
+                    !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+                });
+            if previous_blank || marker {
+                starts.push(offset);
+            }
+        }
+        previous_blank = text.is_empty();
+        offset += line.len();
+    }
+    starts
 }
 
 /// Autolink ends carry the `<url>` range; an inline link's range starts with `[`.
@@ -201,11 +256,14 @@ fn parse_plain(source: &str) -> Document {
     if let Some(span) = paragraph {
         segments.push(plain_segment(source, span));
     }
+    let blocks = block_starts(source, &[]);
     Document {
         segments,
         directives,
         code_free: source.to_owned(),
         list_items: Vec::new(),
+        visible: source.to_owned(),
+        blocks,
     }
 }
 

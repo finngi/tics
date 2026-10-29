@@ -1,44 +1,195 @@
 {
-  "k1": 2.0,
-  "b": 0.75,
-  "avg_words": 202.2,
-  "bias": -0.8958,
-  "prior": 1.0,
-  "lambda": 2.0,
-  "documents": {
+  "model": "beta-binomial likelihood ratio",
+  "eps": 0.02,
+  "scale": 1.051,
+  "bias": 0.0487,
+  "delta_sd": 2.0,
+  "concentration_sd": 0.5,
+  "prior_ratio": 2.718281828459045,
+  "files": {
     "human": 146,
     "ai": 438
   },
-  "weights": {
-    "negative-parallelism": 0.0969,
-    "not-x-but-y": 0.0,
-    "not-x-its-y-split": 0.3227,
-    "x-not-y": 1.0354,
-    "does-x-does-not-y": 0.8865,
-    "rather-than": 0.5988,
-    "not-sentence-start": 1.0,
-    "trailing-ing-analysis": 1.0,
-    "significance-puffing": 1.0,
-    "importance-hedge": 0.5232,
-    "vague-attribution": 0.5103,
-    "summary-opener": 0.978,
-    "signposting": 1.0,
-    "rhetorical-reveal": 1.0,
-    "whether-youre": 1.0,
-    "todays-world": 1.0,
-    "transition-opener": 0.0,
-    "rule-of-three": 0.5382,
-    "ai-vocabulary": 1.0538,
-    "promotional": 1.0153,
-    "copula-avoidance": 0.2347,
-    "canned-assurance": 0.7096,
-    "chatbot-residue": 1.0,
-    "placeholder": 1.0,
-    "leaked-markup": 1.0,
-    "em-dash": 1.1197,
-    "bold-lead-in": 1.5356,
-    "bold-label-line": 1.2771,
-    "stock-section-label": 1.3222,
-    "title-case-heading": 0.2325
+  "params": {
+    "negative-parallelism": [
+      0.012671,
+      15.038655,
+      0.002492,
+      14.400408
+    ],
+    "not-x-but-y": [
+      0.293637,
+      61.270475,
+      0.062932,
+      67.025079
+    ],
+    "not-x-its-y-split": [
+      0.004095,
+      12.352963,
+      0.001604,
+      11.9281
+    ],
+    "x-not-y": [
+      0.143334,
+      39.974295,
+      0.918466,
+      55.528711
+    ],
+    "does-x-does-not-y": [
+      0.015476,
+      29.209327,
+      0.031937,
+      35.221665
+    ],
+    "rather-than": [
+      0.948009,
+      72.551658,
+      2.187257,
+      118.260038
+    ],
+    "not-sentence-start": [
+      0.000182,
+      9.570529,
+      0.000316,
+      9.485807
+    ],
+    "trailing-ing-analysis": [
+      0.000182,
+      9.570529,
+      0.000316,
+      9.485807
+    ],
+    "significance-puffing": [
+      0.000182,
+      9.570529,
+      0.000316,
+      9.485807
+    ],
+    "importance-hedge": [
+      0.014425,
+      17.86238,
+      0.002839,
+      17.162157
+    ],
+    "vague-attribution": [
+      0.006497,
+      11.79227,
+      0.007458,
+      11.873047
+    ],
+    "summary-opener": [
+      0.017271,
+      31.238467,
+      0.042432,
+      38.481902
+    ],
+    "signposting": [
+      0.000182,
+      9.570529,
+      0.000316,
+      9.485807
+    ],
+    "rhetorical-reveal": [
+      0.000182,
+      9.570529,
+      0.000316,
+      9.485807
+    ],
+    "whether-youre": [
+      0.000182,
+      9.570529,
+      0.000316,
+      9.485807
+    ],
+    "todays-world": [
+      0.000182,
+      9.570529,
+      0.000316,
+      9.485807
+    ],
+    "transition-opener": [
+      0.064418,
+      27.445178,
+      0.00529,
+      26.336112
+    ],
+    "rule-of-three": [
+      0.053635,
+      34.398743,
+      0.073761,
+      41.844711
+    ],
+    "ai-vocabulary": [
+      0.037433,
+      33.793214,
+      0.088355,
+      45.816301
+    ],
+    "promotional": [
+      0.000987,
+      11.162072,
+      0.003192,
+      11.580584
+    ],
+    "copula-avoidance": [
+      0.012204,
+      14.295111,
+      0.0024,
+      13.675021
+    ],
+    "canned-assurance": [
+      0.004795,
+      15.216582,
+      0.001872,
+      14.736687
+    ],
+    "chatbot-residue": [
+      0.000182,
+      9.570529,
+      0.000316,
+      9.485807
+    ],
+    "placeholder": [
+      0.000182,
+      9.570529,
+      0.000316,
+      9.485807
+    ],
+    "leaked-markup": [
+      0.000324,
+      9.664048,
+      0.000539,
+      9.594178
+    ],
+    "em-dash": [
+      0.178111,
+      17.303693,
+      0.554349,
+      18.881532
+    ],
+    "bold-lead-in": [
+      0.021658,
+      0.765361,
+      0.123009,
+      0.291645
+    ],
+    "bold-label-line": [
+      0.082425,
+      7.133671,
+      0.376744,
+      3.516018
+    ],
+    "stock-section-label": [
+      0.030403,
+      32.223307,
+      0.860177,
+      43.356767
+    ],
+    "title-case-heading": [
+      0.659205,
+      14.114717,
+      0.836257,
+      13.355319
+    ]
   }
 }

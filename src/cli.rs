@@ -61,6 +61,9 @@ pub(crate) enum Command {
         /// Files or directories to score; `-` or none reads stdin.
         #[arg(value_name = "PATH")]
         paths: Vec<PathBuf>,
+        /// Also score each heading section on its own.
+        #[arg(long)]
+        sections: bool,
     },
 }
 

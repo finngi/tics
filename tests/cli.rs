@@ -270,7 +270,7 @@ fn a_byte_order_mark_does_not_hide_front_matter_or_shift_columns() -> Result<()>
     )?;
     assert_eq!(
         stdout(&output)?,
-        "<stdin>:4:9: x-not-y: possible AI-writing tic: appositive contrast (`X, not Y`) «, not spaces» (confidence 0.76)\n"
+        "<stdin>:4:9: x-not-y: possible AI-writing tic: appositive contrast (`X, not Y`) «, not spaces» (confidence 0.83)\n"
     );
     Ok(())
 }
@@ -284,9 +284,17 @@ fn rules_lists_every_rule_in_both_formats() -> Result<()> {
     for rule in rules {
         let id = rule["id"].as_str().context("id")?;
         assert!(human.lines().any(|line| line.starts_with(id)), "{id}");
-        for field in ["category", "severity", "since", "source", "description"] {
+        for field in [
+            "category",
+            "severity",
+            "since",
+            "unit",
+            "source",
+            "description",
+        ] {
             assert!(rule[field].is_string(), "{id} lacks {field}");
         }
+        assert!(rule["strength"].is_f64(), "{id} lacks strength");
     }
     Ok(())
 }
@@ -308,11 +316,12 @@ fn readme_rule_table_matches_tics_rules() -> Result<()> {
                 .unwrap_or_default()
                 .replace('_', " ");
             format!(
-                "| `{}` | {} | {} | {} | {} | [{label}]({source}) |",
+                "| `{}` | {} | {} | {} | {:+.2} | {} | [{label}]({source}) |",
                 field("id"),
                 field("category"),
                 field("severity"),
                 field("since"),
+                rule["strength"].as_f64().unwrap_or_default(),
                 field("description"),
             )
         })
@@ -354,11 +363,11 @@ fn score_rates_each_file_and_exits_zero() -> Result<()> {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 2, "{text}");
     assert!(
-        lines[0].starts_with("tests/fixtures/tics.md: 1.00 (21 findings in 86 words)"),
+        lines[0].starts_with("tests/fixtures/tics.md: 0.97 (21 findings in 86 words)"),
         "{text}"
     );
     assert!(
-        lines[1].starts_with("tests/fixtures/clean.md: 0.29 (0 findings"),
+        lines[1].starts_with("tests/fixtures/clean.md: 0.43 (0 findings"),
         "{text}"
     );
     let json: serde_json::Value = serde_json::from_str(&stdout(&tics(&[
@@ -368,5 +377,73 @@ fn score_rates_each_file_and_exits_zero() -> Result<()> {
         "tests/fixtures/tics.md",
     ])?)?)?;
     assert!(json[0]["score"].as_f64().is_some_and(|score| score > 0.9));
+    assert_eq!(json[0]["units"]["list_items"], 2);
+    assert_eq!(
+        json[0]["sections"][0]["title"],
+        "Getting Started With The Platform"
+    );
+    let sections = stdout(&tics(&["score", "--sections", "tests/fixtures/tics.md"])?)?;
+    assert!(
+        sections.contains("\n  5: 0.97 Getting Started With The Platform (21 findings)\n"),
+        "{sections}"
+    );
+    Ok(())
+}
+
+#[test]
+fn hidden_or_proseless_text_gets_no_findings_and_no_score() -> Result<()> {
+    for input in [
+        "<!--\n**Why:** because\nShort answer: yes\n-->\n",
+        "",
+        "```\ncode only\n```\n",
+        "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n",
+    ] {
+        let findings = tics_with_stdin(&[], input)?;
+        assert_eq!(findings.status.code(), Some(0), "{input:?}");
+        let score = stdout(&tics_with_stdin(&["score"], input)?)?;
+        assert!(score.starts_with("<stdin>: n/a"), "{input:?}: {score}");
+    }
+    Ok(())
+}
+
+#[test]
+fn wrapping_a_paragraph_does_not_change_its_score() -> Result<()> {
+    let sentences: Vec<String> = (0..40)
+        .map(|n| format!("The service restarts after config change number {n}."))
+        .collect();
+    let one_line = stdout(&tics_with_stdin(&["score"], &(sentences.join(" ") + "\n"))?)?;
+    let wrapped = stdout(&tics_with_stdin(
+        &["score"],
+        &(sentences.join("\n") + "\n"),
+    )?)?;
+    assert_eq!(one_line, wrapped);
+    Ok(())
+}
+
+#[test]
+fn several_hits_in_one_sentence_occupy_it_once() -> Result<()> {
+    let text = "It works — mostly — fast — always. The cache is warm. The tests pass.\n";
+    let json: Value = serde_json::from_str(&stdout(&tics_with_stdin(
+        &["score", "--format", "json"],
+        text,
+    )?)?)?;
+    assert_eq!(json[0]["rules"]["em-dash"], 3);
+    assert_eq!(json[0]["occupied"]["em-dash"], 1);
+    assert_eq!(json[0]["units"]["sentences"], 3);
+    Ok(())
+}
+
+#[test]
+fn readme_confidence_example_matches() -> Result<()> {
+    let output = tics(&[
+        "score",
+        "tests/fixtures/notes.md",
+        "tests/fixtures/answer.md",
+    ])?;
+    let text = stdout(&output)?;
+    let readme = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))?;
+    for line in text.lines() {
+        assert!(readme.contains(line), "README lacks {line:?}");
+    }
     Ok(())
 }
