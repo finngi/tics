@@ -36,16 +36,16 @@ pub(crate) struct Cli {
     pub(crate) summary: bool,
 
     /// Only run these rules (comma-separated ids).
-    #[arg(long, value_delimiter = ',', value_name = "ID")]
+    #[arg(long, value_delimiter = ',', value_name = "ID", global = true)]
     pub(crate) select: Vec<String>,
 
     /// Skip these rules (comma-separated ids).
-    #[arg(long, value_delimiter = ',', value_name = "ID")]
+    #[arg(long, value_delimiter = ',', value_name = "ID", global = true)]
     pub(crate) ignore: Vec<String>,
 
     /// Minimum severity to report.
-    #[arg(long, value_enum, default_value_t = Severity::Info)]
-    pub(crate) severity: Severity,
+    #[arg(long, value_enum, global = true)]
+    pub(crate) severity: Option<Severity>,
 
     /// Only report findings at or above this confidence (0 to 1). A lone hit in a long file
     /// scores low; many hits of the same kind score high.
@@ -64,6 +64,17 @@ fn parse_confidence(text: &str) -> Result<f64, String> {
 pub(crate) enum Command {
     /// List the rules with id, category, severity, since, source and description.
     Rules,
+    /// Prepare exact candidates and context for editorial review.
+    Review {
+        /// Explicit JSON review configuration.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Files or directories to review; `-` or none reads stdin.
+        #[arg(value_name = "PATH")]
+        paths: Vec<PathBuf>,
+    },
+    /// Print the companion editorial-review skill.
+    Instructions,
     /// Score each file from 0 to 1 for how AI-styled its tics make it look.
     Score {
         /// Files or directories to score; `-` or none reads stdin.
@@ -83,6 +94,10 @@ pub(crate) enum Format {
     #[value(alias = "human")]
     Compact,
     Json,
+    /// Review records, one JSON object per line, with instructions first.
+    Jsonl,
+    /// CI Markdown with editorial instructions and exact source context.
+    Ci,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -98,7 +113,6 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::{Cli, Command, Format};
-    use crate::rules::Severity;
 
     #[test]
     fn cli_definition_is_valid() {
@@ -109,7 +123,7 @@ mod tests {
     fn defaults_read_stdin_in_human_format_at_info() -> Result<()> {
         let cli = Cli::try_parse_from(["tics"])?;
         assert!(cli.paths.is_empty() && cli.command.is_none() && !cli.summary);
-        assert_eq!((cli.format, cli.severity), (None, Severity::Info));
+        assert_eq!((cli.format, cli.severity), (None, None));
         Ok(())
     }
 

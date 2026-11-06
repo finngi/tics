@@ -1,6 +1,6 @@
 # Design
 
-`tics` is one binary crate (about 4,200 lines of Rust, about 40% of them tests). The pipeline:
+`tics` is one binary crate. The pipeline:
 
 ```text
 inputs.rs    paths -> files (sorted walk) or stdin
@@ -9,7 +9,9 @@ sentences.rs segment -> sentence ranges
 engine.rs    compiled rules x sentences/segments -> findings with line/column, suppression
 score.rs     per-rule counts in a file -> confidence per finding and a score per file
 output.rs    human | JSON | summary | scores | rule list
-rules.rs     the rule table (data) and the two non-regex heuristics
+rules.rs     the legacy rule table (data) and the two non-regex heuristics
+review_rules.rs review-only candidate cues
+review.rs    source-exact review records, passage hotspots and embedded instructions
 ```
 
 ## Dependencies
@@ -372,3 +374,41 @@ compared; this crate is A with parts of B merged in.
   deduplicating paths by canonical name and skipping hidden or build directories named
   explicitly on the command line (A scans what the user names); multi-line suppression
   comments; and the `tempfile` dev-dependency (`CARGO_TARGET_TMPDIR` suffices).
+
+## Editorial review candidates in 0.3.0
+
+The review command serves a different task from the legacy authorship-style score: it
+selects places for an LLM to inspect and supplies source-exact locations. It emits no
+probability that an edit is warranted. Existing JSON/compact/score contracts and their
+calibration stay unchanged; `guided-tour-variants` is an additional review-only cue.
+
+Review output includes full original text and half-open UTF-8 source bytes. Source text is
+included once per flagged file rather than repeated for every match. Unflagged bodies are
+omitted, and status explicitly says unreviewed. Initial BOM bytes stay in source ranges;
+display line/columns ignore that initial marker. A regex can bridge blanked code or HTML;
+`crosses_code_or_html` requests refinement rather than endorsing replacement of protected
+material. A masked non-ASCII character is enclosed completely if a match ends inside its
+byte extent. Repeated/overlapping input paths are deduplicated for review.
+
+The public review contract is documented in [docs/review.md](docs/review.md). Review is a
+local candidate-generation step, not an automatic editor. Exact geometry establishes where a
+cue occurred, not whether its wording is wrong or a replacement preserves meaning. A consumer
+must check the current source, assess context and validate any composed changes separately.
+
+### Development evidence and limits
+
+In reviewed development paragraphs the new guided-tour pattern overlaps accepted framing
+evidence in 15 positives, while also matching 9 acceptable and 30 uncertain cases. At the
+whole-excerpt gate, adding it to all 30 existing cues increases routed files from 990 to 999
+of 1,417 and recovers five additional labelled-positive files. On a separate 118-excerpt
+calibration slice the routed file count is unchanged; only 41 of 55 known-positive files
+are routed. Thus a zero-candidate result cannot certify that no useful correction exists.
+These are model-reviewed labels and local development observations, not human gold or
+population estimates. Broad vocabulary expansion matched many acceptable passages and
+was rejected; more cues do not automatically improve the correction workflow.
+
+The [initial evaluation](docs/0.3-evaluation.md) and
+[regression investigation](docs/0.3-regression-investigation.md) preserve whole-file correction
+results, including skipped files, missed issues and damaging edits. They have not established
+an end-to-end correction-efficiency gain without quality loss. These historical observations
+do not change the legacy calibration or make review hints into correctness guarantees.

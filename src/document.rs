@@ -61,12 +61,20 @@ pub(crate) struct Document {
 
 pub(crate) fn parse(source: &str, mode: Mode) -> Document {
     match mode {
-        Mode::Markdown => parse_markdown(source),
+        Mode::Markdown => parse_markdown(source, false),
         Mode::Plain => parse_plain(source),
     }
 }
 
-fn parse_markdown(source: &str) -> Document {
+/// Review candidates exclude Markdown math; legacy scans retain their existing behavior.
+pub(crate) fn parse_review(source: &str, mode: Mode) -> Document {
+    match mode {
+        Mode::Markdown => parse_markdown(source, true),
+        Mode::Plain => parse_plain(source),
+    }
+}
+
+fn parse_markdown(source: &str, review: bool) -> Document {
     // Front matter is blanked by hand: pulldown-cmark's metadata-block option also accepts
     // `---` blocks in the middle of a document, which would hide prose between thematic breaks.
     let front_matter = 0..front_matter_len(source);
@@ -76,11 +84,14 @@ fn parse_markdown(source: &str) -> Document {
         std::slice::from_ref(&front_matter),
         Keep::Outside,
     );
-    let options = Options::ENABLE_TABLES
+    let mut options = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_GFM;
+    if review {
+        options |= Options::ENABLE_MATH;
+    }
     let mut collector = Collector::default();
     let mut opaque_depth = 0_usize;
     let mut in_heading = false;

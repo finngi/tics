@@ -160,6 +160,7 @@ mod tests {
 
     fn finding(rule: &'static str) -> Finding {
         Finding {
+            span: 0..0,
             path: "a.md".into(),
             line: 2,
             column: 5,

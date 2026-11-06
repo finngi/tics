@@ -1,0 +1,49 @@
+name: Tics editorial review
+description: Review changed prose in a pull request and post an advisory report
+inputs:
+  config:
+    description: Repository-relative path to a tics JSON review config
+    required: false
+    default: ''
+  select:
+    description: Rule IDs to enable, separated by commas or newlines; replaces config selection
+    required: false
+    default: ''
+  ignore:
+    description: Rule IDs to disable, separated by commas or newlines; extends config exclusions
+    required: false
+    default: ''
+  severity:
+    description: Minimum severity (info or warn); overrides the config when set
+    required: false
+    default: ''
+outputs:
+  report-path:
+    description: Path to the complete JSON review report on the runner
+    value: ${{ steps.review.outputs.report-path }}
+  candidates:
+    description: Number of candidates in the report
+    value: ${{ steps.review.outputs.candidates }}
+  files-needing-review:
+    description: Number of files with candidates
+    value: ${{ steps.review.outputs.files-needing-review }}
+runs:
+  using: composite
+  steps:
+    - name: Build tics from the action source
+      shell: bash
+      env:
+        CARGO_TARGET_DIR: ${{ runner.temp }}/tics-action-target
+      run: cargo build --locked --release --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml"
+      working-directory: ${{ github.action_path }}
+    - name: Review changed prose
+      id: review
+      shell: bash
+      env:
+        TICS_TOKEN: ${{ github.token }}
+        TICS_BINARY: ${{ runner.temp }}/tics-action-target/release/tics
+        TICS_CONFIG: ${{ inputs.config }}
+        TICS_SELECT: ${{ inputs.select }}
+        TICS_IGNORE: ${{ inputs.ignore }}
+        TICS_SEVERITY: ${{ inputs.severity }}
+      run: node "$GITHUB_ACTION_PATH/action/run.cjs"

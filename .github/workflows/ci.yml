@@ -67,3 +67,54 @@ jobs:
       - run: cargo test --locked
       # The 1 MiB-under-a-second bound is asserted only in release builds.
       - run: cargo test --locked --release --test performance
+
+  action:
+    name: action tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --release
+      - run: node --test tests/action*.test.cjs
+        env:
+          TICS_TEST_BINARY: ${{ github.workspace }}/target/release/tics
+
+  prose-review:
+    name: prose review integration
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: ./
+        id: tics
+      - name: Verify agent report outputs
+        env:
+          TICS_REPORT: ${{ steps.tics.outputs.report-path }}
+          TICS_CANDIDATES: ${{ steps.tics.outputs.candidates }}
+          TICS_FILES: ${{ steps.tics.outputs.files-needing-review }}
+        run: |
+          node <<'JS'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const report = JSON.parse(fs.readFileSync(process.env.TICS_REPORT, 'utf8'));
+          assert.equal(report.schema, 'tics.review.v1');
+          assert.equal(Number(process.env.TICS_CANDIDATES), report.summary.candidates);
+          assert.equal(Number(process.env.TICS_FILES), report.summary.files_needing_review);
+          JS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tics-review
+          path: ${{ steps.tics.outputs.report-path }}

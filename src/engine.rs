@@ -17,6 +17,9 @@ const MATCHED_MAX_CHARS: usize = 80;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct Finding {
+    /// Exact half-open UTF-8 source bytes; legacy JSON keeps its existing shape.
+    #[serde(skip)]
+    pub(crate) span: Range<usize>,
     pub(crate) path: String,
     pub(crate) line: usize,
     pub(crate) column: usize,
@@ -133,7 +136,14 @@ fn build(pattern: &str) -> Result<Regex> {
 
 /// Scans one source. `path` is only copied into the findings.
 pub(crate) fn scan(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> FileReport {
-    let document = document::parse(source, mode);
+    scan_document(path, source, &document::parse(source, mode), rules)
+}
+
+pub(crate) fn scan_review(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> FileReport {
+    scan_document(path, source, &document::parse_review(source, mode), rules)
+}
+
+fn scan_document(path: &str, source: &str, document: &Document, rules: &[Compiled]) -> FileReport {
     let words = document
         .segments
         .iter()
@@ -170,7 +180,7 @@ pub(crate) fn scan(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> 
     let mut hits: Vec<(&'static Rule, Range<usize>)> = Vec::new();
     for compiled in rules {
         let mut spans = Vec::new();
-        compiled.find(&document, &blocks, &mut spans);
+        compiled.find(document, &blocks, &mut spans);
         hits.extend(spans.into_iter().map(|span| (compiled.rule, span)));
     }
     // Ascending offsets let the cursor count each line's characters once in total.
@@ -187,6 +197,7 @@ pub(crate) fn scan(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> 
         kept.push((rule, span.start));
         let context = line_context(source, &lines, line, span.start);
         findings.push(Finding {
+            span: span.clone(),
             path: path.to_owned(),
             line,
             column,
@@ -209,9 +220,8 @@ pub(crate) fn scan(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> 
     findings.sort_by(|a, b| (a.line, a.column, a.rule).cmp(&(b.line, b.column, b.rule)));
     findings.dedup();
     let selected: Vec<&'static Rule> = rules.iter().map(|compiled| compiled.rule).collect();
-    let layout = Layout::new(&document, &blocks);
-    let whole = 0..source.len();
-    let units = layout.units(&whole);
+    let layout = Layout::new(document, &blocks);
+    let units = layout.units(&(0..source.len()));
     let occupied = layout.occupied(&kept);
     // One confidence per rule: it depends only on the rule's counts in the file.
     let confidence: BTreeMap<&str, f64> = selected
@@ -228,7 +238,7 @@ pub(crate) fn scan(path: &str, source: &str, mode: Mode, rules: &[Compiled]) -> 
     let score = units
         .has_prose()
         .then(|| score::score(&occupied, &units, &selected));
-    let sections = sections(&document, &lines, &layout, &kept, &findings, &selected);
+    let sections = sections(document, &lines, &layout, &kept, &findings, &selected);
     FileReport {
         findings,
         words,

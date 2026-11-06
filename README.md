@@ -1,24 +1,77 @@
 # tics
 
-A small, deterministic command-line tool that flags AI-writing tics in Markdown and plain-text
-prose: negative parallelisms (`not X, but Y`), stock openers, puffed-up vocabulary, chatbot
-residue and formatting habits.
+A small, deterministic local tool for spotting writing patterns worth reviewing in Markdown
+and plain text: stock framing, inflated vocabulary, empty contrasts, chatbot residue and
+repeated formatting.
 
-Same input, same output. No network, no models, no randomness.
+`tics review` gives a human or a downstream LLM exact candidates and surrounding context.
+Review the matches in context.
+Tics itself makes no network requests, runs no models and never rewrites files.
 
-> **A hit is a signal and never proof on its own.** People wrote `delve` and em dashes long before chatbots
-> did. A single hit means little; look at the density in `--summary` (hits per 1,000 words)
-> and read the text. Wikipedia makes the same point about its own list of signs.
+## Install 0.3.0
 
-## Install
+With Rust 1.88 or newer:
 
 ```sh
-cargo install --locked --git https://github.com/finngi/tics --tag v0.1.0
+cargo install --git https://github.com/finngi/tics --tag v0.3.0 --locked --force
+tics --version
 ```
 
-Needs a stable Rust toolchain (edition 2024, Rust 1.88 or newer).
+Prebuilt executables for macOS and Linux are available on the
+[0.3.0 release](https://github.com/finngi/tics/releases/tag/v0.3.0).
+See [installation and CI options](docs/distribution.md) for the shared source package.
 
-## Usage
+To install a local checkout, run from its repository root:
+
+```sh
+cargo install --path . --locked --force
+tics --version
+```
+
+This replaces the `tics` binary in Cargo's bin directory. To try the checkout separately, use
+`cargo build --release --locked` and run `./target/release/tics`.
+
+## Editorial review
+
+```sh
+tics review draft.md                  # passage hotspots and findings in a terminal
+tics review docs/ --json              # exact candidates and source context
+tics review docs/ --format jsonl      # records for a downstream consumer
+tics review docs/ --format ci         # Markdown report with review instructions
+tics instructions                    # print the companion review skill
+```
+
+Review defaults to JSONL when piped. Its 31 cues include the existing 30 rules and the
+review-only `guided-tour-variants` cue. Conditional hints help the reviewer retain legitimate
+teaching, useful distinctions, technical claims and deliberate voice. Hotspot counts indicate
+where patterns occur, not where edits are necessarily needed.
+
+Exit `1` means candidates were found; `0` means none were found; `2` means a usage or input
+error. Exit `0` records that no selected patterns matched.
+Zero-candidate file records omit the source body. Never treat exit `2` as a clean result.
+
+See [the review contract and examples](docs/review.md) and the portable
+[review skill](skills/tics-review/SKILL.md). Downstream edits need their own source validation,
+meaning and grammar review. Local experiments have **not demonstrated a correction-efficiency
+gain without quality loss**; [evaluation history](docs/review.md#evaluation-history) preserves
+those results.
+
+## GitHub pull requests
+
+The reusable Action scans changed Markdown and text files, posts one advisory PR comment
+and updates it on later runs. It also writes a job summary; fork PRs retain that summary
+when their token cannot post comments. See the [complete workflow example](docs/github-action.md).
+
+```yaml
+- uses: finngi/tics@v0.3.0
+```
+
+The Action requires checkout of the PR head and comment permissions, as shown in the example.
+Use its `select`, `ignore`, `severity` and `config` inputs to choose rules or load a JSON
+config with custom patterns and allowed phrases. The PR comment shows match counts and
+collapsed findings linked to source lines.
+
+## Existing scan and score commands
 
 ```sh
 tics README.md docs/          # files and directories (recursive)
@@ -69,7 +122,10 @@ JSON output becomes an object `{"findings": [...], "summary": {...}}`.
 Exit codes: `0` no findings, `1` findings, `2` usage or IO error. `tics score` exits `0`
 unless there is an error.
 
-### Confidence
+### Legacy confidence
+
+These scores describe the fitted authorship-style corpus, not the probability that a phrase
+needs editing. Review output does not use them.
 
 Each finding has a confidence from 0 to 1: how likely it is, from this rule's hits in this file
 alone and with even odds to start, that the file is AI-styled. Below 0.5 means the pattern, at
