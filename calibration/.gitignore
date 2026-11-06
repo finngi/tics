@@ -1,0 +1,6 @@
+/human
+/ai
+/prompts.jsonl
+.cache/
+doc_hits.json
+failures.log

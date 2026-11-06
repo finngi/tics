@@ -6,10 +6,34 @@
 
 use serde::Serialize;
 
+use crate::score::Unit;
+
 const SIGNS: &str = "https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing";
 const WORDS: &str = "https://en.wikipedia.org/wiki/Wikipedia:Manual_of_Style/Words_to_watch";
 const BUZZ: &str = "https://en.wikipedia.org/wiki/Wikipedia:Marketing_buzzspeak";
 const V0_1_0: &str = "0.1.0";
+const V0_2_0: &str = "0.2.0";
+
+/// Section labels that chat models put on their own line. From the calibration corpus
+/// (DESIGN.md, "Calibration"): in about half of one model family's explanations, never in the
+/// human baseline.
+macro_rules! stock_label {
+    () => {
+        r"(?:the\x20)?(?:
+            why\x20(?:it|this|that)\x20(?:matters|works)
+          | how\x20(?:it|this)\x20works
+          | what\x20(?:it|this)\x20means
+          | key\x20(?:takeaways?|points|ideas)
+          | the\x20basics
+          | (?:short|long|quick)\x20answer
+          | short\x20version
+          | tl;?\x20?dr
+          | in\x20short
+          | bottom\x20line
+          | in\x20a\x20nutshell
+        )\b"
+    };
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -73,6 +97,9 @@ pub(crate) enum Detector {
     Heading(fn(&str) -> bool),
     /// Runs on the whole source with only code and front matter removed, so it sees URLs.
     Raw(&'static str),
+    /// Runs on the text a reader sees, one Markdown block per line start: code, HTML
+    /// (comments included) and front matter removed, Markdown markup such as `**` kept.
+    Block(&'static str),
 }
 
 #[derive(Debug)]
@@ -83,6 +110,8 @@ pub(crate) struct Rule {
     pub(crate) since: &'static str,
     pub(crate) source: &'static str,
     pub(crate) description: &'static str,
+    /// One short suggestion for rewriting a hit, shown in the terminal output.
+    pub(crate) hint: &'static str,
     pub(crate) detector: Detector,
 }
 
@@ -95,6 +124,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "negative parallelism (`not only X but also Y`, `isn't just X`)",
+        hint: "Say what it is and drop the \"not only... but\" frame.",
         detector: Detector::Text {
             find: r"\bnot\s+(?:only|just|merely)\s[^.!?;]{1,80}?\bbut\b(?:\s+also\b)?
                   | \b(?:is|are|was|were|does)(?:n['’]t|\s+not)\s+(?:just|merely)\s+\w
@@ -110,6 +140,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "contrast inside one sentence (`not X, but Y`, `isn't X; it's Y`)",
+        hint: "State the point directly and drop the contrast with what it isn't.",
         detector: Detector::Text {
             find: r"\b(?:not|(?:is|are|was|were|does)n['’]t)\s+[^.!?;:,—–\n]{1,50}?\s*,\s*but\s+\w
                   | \b(?:not|(?:is|are|was|were)n['’]t)\s+[^.!?;:,—–\n]{1,50}?\s*(?:[;,:]|[—–])\s*
@@ -131,6 +162,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "contrast split over two sentences (`It isn't X. It's Y.`)",
+        hint: "Merge the two sentences into one plain statement.",
         detector: Detector::Pair {
             first: r#"\A["“]?(?:it|this|that|they)
                       (?:\s+(?:is|are|was|were|does|do)\s+not|\s+(?:is|are|was|were|does|do)n['’]t|['’]s\s+not|['’]re\s+not)\b"#,
@@ -147,6 +179,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "appositive contrast (`X, not Y`)",
+        hint: "Keep the claim; cut \", not Y\" unless readers would assume Y.",
         detector: Detector::Text {
             find: r"\s?(?P<m>(?:,|[—–])\s*not\s+[^,.;:!?\n—–()]{1,40})",
             reject: Some(
@@ -164,6 +197,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "same subject affirmed then denied (`It does X. It does not Y.`)",
+        hint: "Drop the denial unless readers would expect it.",
         detector: Detector::Pair {
             first: r#"\A["“]?(?P<subj>(?:(?:the|this|that|a|an|our|your|its)\s+)?[\w-]+)\s+\w+"#,
             first_reject: Some(r"\bnot\b|n['’]t\b|\bnever\b|\bno\b"),
@@ -180,6 +214,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "contrast framing (`rather than`, `instead of`)",
+        hint: "Fine now and then; check the contrast earns its place.",
         detector: Detector::Text {
             find: r"\b(?:rather\s+than|instead\s+of)\b",
             reject: None,
@@ -193,6 +228,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "sentence opening with a negation (`Not a…`, `Not just…`, `Not because…`)",
+        hint: "Open with the positive statement.",
         detector: Detector::Text {
             find: r#"\A["“(]?not\s+(?:a|an|the|just|only|because)\b"#,
             reject: None,
@@ -207,6 +243,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "trailing participle analysis (`, highlighting…`, `, underscoring…`)",
+        hint: "Cut the trailing -ing clause or make it its own sentence.",
         detector: Detector::Text {
             find: r",\s*(?:highlighting|underscoring|emphasi[sz]ing|reflecting|showcasing|fostering)\b",
             reject: None,
@@ -220,6 +257,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "puffed-up significance (`pivotal role`, `is a testament`, `evolving landscape`)",
+        hint: "Replace the importance claim with the concrete fact.",
         detector: Detector::Text {
             find: r"\b(?:crucial|pivotal|vital)\s+role\b
                   | \b(?:is|was|are|were|stands\s+as|serves\s+as|remains)\s+(?:a|an)\s+(?:\w+\s+)?(?:testament|reminder)\b
@@ -237,6 +275,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: WORDS,
         description: "editorialising hedge (`it's worth noting`, `it should be noted`)",
+        hint: "Delete the hedge and state the point.",
         detector: Detector::Text {
             find: r"\b(?:it|this)(?:['’]s|\s+is)\s+(?:also\s+|especially\s+|particularly\s+)?
                     (?:important|worth|crucial|essential)\s+
@@ -253,6 +292,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "vague attribution (`experts argue`, `critics say`)",
+        hint: "Name the source or drop the attribution.",
         detector: Detector::Text {
             find: r"\b(?:experts|observers|critics|analysts|commentators)\s+
                     (?:argue|say|believe|suggest|agree|claim|contend|warn)\b",
@@ -267,6 +307,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "summary opener (`In summary,`, `Overall,`, `Ultimately,`)",
+        hint: "Cut the opener; the summary can stand on its own.",
         detector: Detector::Text {
             find: r#"\A["“(]?(?:in\s+summary|in\s+conclusion|overall|ultimately|in\s+short)\s*,"#,
             reject: None,
@@ -280,6 +321,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "chatty signposting (`Here's the thing`, `Let's dive in`)",
+        hint: "Delete the signpost and start with the content.",
         detector: Detector::Text {
             find: r"\bhere['’]s\s+the\s+thing\b
                   | \blet['’]s\s+(?:dive\s+(?:in|into|deeper)|delve|unpack)\b
@@ -295,6 +337,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "rhetorical reveal (`The result?`, `The catch?`)",
+        hint: "Write the answer as a plain sentence.",
         detector: Detector::Text {
             find: r#"\A["“]?the\s+(?:result|catch|answer|kicker|twist)\?"#,
             reject: None,
@@ -308,6 +351,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "audience sweep (`Whether you're X or Y`)",
+        hint: "Write for the actual reader and drop the audience sweep.",
         detector: Detector::Text {
             find: r#"\A["“]?whether\s+you(?:['’]re|\s+are)\s[^.!?]{1,80}?\bor\b"#,
             reject: None,
@@ -321,6 +365,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "era cliché (`In today's fast-paced world`)",
+        hint: "Delete the era cliché.",
         detector: Detector::Text {
             find: r"\bin\s+today['’]s\s+(?:\w+\s+)?(?:fast-paced|ever-changing|ever-evolving|rapidly\s+(?:changing|evolving)
                     |digital|modern|interconnected|competitive|data-driven|world|age|era|landscape)\b",
@@ -335,6 +380,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "stock transition opener (`Additionally,`, `Moreover,`, `Furthermore,`)",
+        hint: "Often removable: join or reorder the sentences.",
         detector: Detector::Text {
             find: r#"\A["“(]?(?:additionally|moreover|furthermore|notably)\s*,"#,
             reject: None,
@@ -348,6 +394,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "list of three or more adjectives or abstract nouns (`fast, reliable, and secure`)",
+        hint: "Keep the one or two words that carry meaning.",
         detector: Detector::Text {
             find: r"(?-i:\b[a-z][a-z-]*(?:\s+[a-z][a-z-]*)?,\s+[a-z][a-z-]*(?:\s+[a-z][a-z-]*)?
                     (?:,\s+[a-z][a-z-]*(?:\s+[a-z][a-z-]*)?)*,?\s+(?:and|or)\s+[a-z][a-z-]*(?:\s+[a-z][a-z-]*)?\b)",
@@ -363,6 +410,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "overused AI vocabulary (`delve`, `tapestry`, `robust`, `seamless`, …)",
+        hint: "Use a plainer word.",
         detector: Detector::Text {
             find: r"\b(?:delv(?:e|es|ed|ing)|tapestr(?:y|ies)|testaments?|landscapes?|robust(?:ly|ness)?
                     |leverag(?:e|es|ed|ing)|underscor(?:ed|ing)|underscores?\s+(?:the|a|an|how|why|its|our|their|this|these|those)
@@ -385,6 +433,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: BUZZ,
         description: "promotional buzzwords (`boasts a`, `cutting-edge`, `best-in-class`)",
+        hint: "Replace the buzzword with a specific claim.",
         detector: Detector::Text {
             find: r"\bboasts?\s+(?:a|an)\b|\bground[-\s]?breaking\b|\bcutting[-\s]edge\b|\bworld-class\b
                   | \bstate[-\s]of[-\s]the[-\s]art\b|\bbest[-\s]in[-\s]class\b",
@@ -399,6 +448,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "copula avoidance (`serves as a`, `stands as the`)",
+        hint: "Use \"is\" or \"are\".",
         detector: Detector::Text {
             find: r"\b(?:serv(?:e|es|ed|ing)|stand(?:s|ing)?|stood|function(?:s|ed|ing))\s+as\s+(?:a|an|the)\b",
             reject: None,
@@ -412,6 +462,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "canned assurance (`ensure that`, `in compliance with`, `streamline`)",
+        hint: "Say what is checked or done, concretely.",
         detector: Detector::Text {
             find: r"\bensur(?:e|es|ed|ing)\s+that\b|\bin\s+compliance\s+with\b|\bstreamlin(?:e|es|ed|ing)\b",
             reject: None,
@@ -426,6 +477,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "chatbot residue (`Certainly!`, `I hope this helps`, `as an AI`)",
+        hint: "Remove chat filler from published text.",
         detector: Detector::Text {
             find: r"\bcertainly!|\bof\s+course!|\bgreat\s+question\b|\bi\s+hope\s+this\s+helps\b
                   | \blet\s+me\s+know\s+if\b|\bas\s+an\s+(?-i:AI)\b",
@@ -440,6 +492,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "unfilled placeholder (`[Insert …]`, `INSERT_`, `YYYY-XX-XX`)",
+        hint: "Fill in or remove the placeholder.",
         detector: Detector::Text {
             find: r"\[(?:insert|describe|your)\s[^\]\n]{1,60}\]|(?-i:\bINSERT_[A-Z0-9_]*)|(?-i:\b(?:YYYY|XXXX)-XX-XX\b)",
             reject: None,
@@ -453,6 +506,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "leaked chatbot markup (`contentReference[oaicite`, `utm_source=chatgpt.com`)",
+        hint: "Remove the leaked citation or tracking markup.",
         detector: Detector::Raw(
             r"contentReference\[oaicite|utm_source=chatgpt\.com|referrer=grok\.com",
         ),
@@ -465,6 +519,7 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "em dash in prose",
+        hint: "Use a comma, colon, parentheses or a new sentence.",
         detector: Detector::Text {
             find: "—",
             reject: None,
@@ -478,10 +533,43 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "list item led by a bold label and colon (`- **Label:** text`)",
+        hint: "Write the items as plain sentences, or keep bold labels few.",
         detector: Detector::ListItem(
             r"\A(?:[-*+]|\d{1,9}[.)])[\x20\t]+(?:\[[\x20xX]\][\x20\t]+)?
               (?P<m>(?:\*\*|__)[^*_\n]{1,80}?(?::(?:\*\*|__)|(?:\*\*|__)[\x20\t]*:))",
         ),
+    },
+    Rule {
+        id: "bold-label-line",
+        category: Category::Formatting,
+        severity: Severity::Warn,
+        since: V0_2_0,
+        source: SIGNS,
+        description: "paragraph led by a bold label, or a bold line used as a heading (`**Why:** …`)",
+        hint: "Use a real heading, or fold the label into the sentence.",
+        detector: Detector::Block(
+            r"(?m)^[\x20\t]{0,3}(?:
+                (?:\*\*|__)[^*_\n]{1,60}?[:.]?(?:\*\*|__)[:.]?[\x20\t]*$
+              | (?:\*\*|__)[^*_\n]{1,60}?[:.](?:\*\*|__)[\x20\t]
+              | (?:\*\*|__)[^*_\n]{1,60}?(?:\*\*|__)[:.][\x20\t]
+            )",
+        ),
+    },
+    Rule {
+        id: "stock-section-label",
+        category: Category::Formatting,
+        severity: Severity::Warn,
+        since: V0_2_0,
+        source: SIGNS,
+        description: "stock section label (`Why it matters`, `How it works`, `Short answer:`, `TL;DR`)",
+        hint: "Use a heading that names this content.",
+        detector: Detector::Block(concat!(
+            r"(?m)^[\x20\t]{0,3}(?:\#{1,6}[\x20\t]+(?:\*\*|__)?|\*\*|__)",
+            stock_label!(),
+            r"|(?m)^[\x20\t]{0,3}",
+            stock_label!(),
+            r"[\x20\t]?:",
+        )),
     },
     Rule {
         id: "title-case-heading",
@@ -490,9 +578,22 @@ pub(crate) static RULES: &[Rule] = &[
         since: V0_1_0,
         source: SIGNS,
         description: "heading in Title Case",
+        hint: "Use sentence case.",
         detector: Detector::Heading(is_title_case),
     },
 ];
+
+impl Rule {
+    /// What one opportunity for this rule is, for the confidence model.
+    pub(crate) fn unit(&self) -> Unit {
+        match self.detector {
+            Detector::Text { .. } | Detector::Pair { .. } => Unit::Sentence,
+            Detector::ListItem(_) => Unit::ListItem,
+            Detector::Heading(_) => Unit::Heading,
+            Detector::Raw(_) | Detector::Block(_) => Unit::Block,
+        }
+    }
+}
 
 /// Looks up a rule by its id.
 pub(crate) fn by_id(id: &str) -> Option<&'static Rule> {

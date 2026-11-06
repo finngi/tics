@@ -318,6 +318,33 @@ const CASES: &[Case] = &[
         passes: &["Pages 1–5 cover setup.", "Run `a — b` to compare files."],
     },
     Case {
+        rule: "bold-label-line",
+        flags: &[
+            "**Why it happens:** the starter ran out of food.",
+            "**The fix**\n\nFeed it twice a day.",
+            "**Short answer**: yes.",
+        ],
+        passes: &[
+            "- **Speed:** builds in seconds.",
+            "Run the build with **release** settings: it is faster.",
+            "This is **not** supported on Windows.",
+        ],
+    },
+    Case {
+        rule: "stock-section-label",
+        flags: &[
+            "## Why it matters\n\nBecause it does.",
+            "**How it works**\n\nIt reads the file.",
+            "Short answer: no.",
+            "**TL;DR:** use a lock file.",
+        ],
+        passes: &[
+            "This explains how it works in practice.",
+            "## Installing on Linux",
+            "In short bursts the fan runs faster.",
+        ],
+    },
+    Case {
         rule: "bold-lead-in",
         flags: &[
             "- **Speed:** builds in seconds.",

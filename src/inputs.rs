@@ -1,9 +1,11 @@
 //! Resolves command-line paths into the files to scan, in a deterministic order.
 
+use std::collections::BTreeSet;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use ignore::WalkBuilder;
 
 use crate::document::Mode;
 
@@ -17,7 +19,8 @@ pub(crate) enum Input {
 }
 
 /// Expands `paths`: `-` or no paths is stdin, directories are walked recursively (sorted,
-/// skipping hidden directories, `target/` and `node_modules/`), files are taken as given.
+/// respecting `.gitignore` and skipping hidden directories, `target/` and `node_modules/`),
+/// files are taken as given.
 pub(crate) fn collect(paths: &[PathBuf]) -> Result<Vec<Input>> {
     if paths.is_empty() {
         return Ok(vec![Input::Stdin]);
@@ -41,27 +44,50 @@ pub(crate) fn collect(paths: &[PathBuf]) -> Result<Vec<Input>> {
     Ok(inputs)
 }
 
+/// A review should not request the same file twice through overlapping paths.
+pub(crate) fn collect_review(paths: &[PathBuf]) -> Result<Vec<Input>> {
+    let mut seen = BTreeSet::new();
+    let mut unique = Vec::new();
+    for input in collect(paths)? {
+        let identity = match &input {
+            Input::Stdin => None,
+            Input::File(path) => Some(
+                path.canonicalize()
+                    .with_context(|| format!("resolving {}", path.display()))?,
+            ),
+        };
+        if seen.insert(identity) {
+            unique.push(input);
+        }
+    }
+    Ok(unique)
+}
+
 fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    let mut entries = std::fs::read_dir(dir)
-        .with_context(|| format!("reading directory {}", dir.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("reading directory {}", dir.display()))?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        // `file_type` does not follow symlinks, so symlinked directories are not walked
-        // (no cycles); a symlink to a file is followed by `metadata`.
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("reading {}", path.display()))?;
-        if file_type.is_dir() {
-            if !name.starts_with('.') && !SKIPPED_DIRS.contains(&name.as_ref()) {
-                walk(&path, files)?;
+    let mut walker = WalkBuilder::new(dir);
+    walker
+        .standard_filters(false)
+        .parents(true)
+        .git_ignore(true)
+        .require_git(false)
+        .follow_links(false)
+        .sort_by_file_name(Ord::cmp)
+        .filter_entry(|entry| {
+            if !entry.file_type().is_some_and(|kind| kind.is_dir()) {
+                return true;
             }
-        } else if has_prose_extension(&path) && path.is_file() {
-            files.push(path);
+            let name = entry.file_name().to_string_lossy();
+            !name.starts_with('.') && !SKIPPED_DIRS.contains(&name.as_ref())
+        });
+    for entry in walker.build() {
+        let entry = entry.with_context(|| format!("walking directory {}", dir.display()))?;
+        if let Some(error) = entry.error() {
+            return Err(error.clone()).context("reading .gitignore rules");
+        }
+        let path = entry.path();
+        // Directory symlinks are not followed; file symlinks still count as files.
+        if has_prose_extension(path) && path.is_file() {
+            files.push(entry.into_path());
         }
     }
     Ok(())
@@ -89,18 +115,24 @@ pub(crate) fn mode_of(input: &Input) -> Mode {
 
 /// The display name and UTF-8 contents of an input.
 pub(crate) fn read(input: &Input) -> Result<(String, String)> {
+    let (path, text) = read_raw(input)?;
+    Ok((path, without_bom(text)))
+}
+
+/// Keeps source bytes for patch-verifiable review output.
+pub(crate) fn read_raw(input: &Input) -> Result<(String, String)> {
     match input {
         Input::Stdin => {
             let mut text = String::new();
             std::io::stdin()
                 .read_to_string(&mut text)
                 .context("reading stdin as UTF-8")?;
-            Ok(("<stdin>".to_owned(), without_bom(text)))
+            Ok(("<stdin>".to_owned(), text))
         }
         Input::File(path) => {
             let text = std::fs::read_to_string(path)
                 .with_context(|| format!("reading {} as UTF-8", path.display()))?;
-            Ok((path.display().to_string(), without_bom(text)))
+            Ok((path.display().to_string(), text))
         }
     }
 }
