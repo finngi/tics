@@ -1,3 +1,3 @@
 # Release verification
 
-This is a world-class export.
+The exporter writes CSV files.
