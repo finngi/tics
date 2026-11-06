@@ -1,0 +1,14 @@
+{
+  "select": [
+    "release-smoke"
+  ],
+  "custom_rules": [
+    {
+      "id": "release-smoke",
+      "title": "Review comparison claim",
+      "pattern": "world-class",
+      "hint": "Give a specific comparison.",
+      "severity": "warn"
+    }
+  ]
+}

@@ -86,7 +86,7 @@ jobs:
           TICS_TEST_BINARY: ${{ github.workspace }}/target/release/tics
 
   prose-review:
-    name: prose review integration
+    name: published 0.3.0 Action
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -98,7 +98,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - uses: ./
+      - uses: finngi/tics@v0.3.0
+        with:
+          config: .tics-smoke.json
         id: tics
       - name: Verify agent report outputs
         env:
@@ -113,6 +115,18 @@ jobs:
           assert.equal(report.schema, 'tics.review.v1');
           assert.equal(Number(process.env.TICS_CANDIDATES), report.summary.candidates);
           assert.equal(Number(process.env.TICS_FILES), report.summary.files_needing_review);
+          const expected = fs.readFileSync('docs/tics-release-smoke.md', 'utf8').includes('world-class') ? 1 : 0;
+          assert.equal(report.summary.files, 1);
+          assert.equal(report.summary.candidates, expected);
+          assert.equal(report.summary.files_needing_review, expected);
+          if (expected) {
+            const file = report.files[0];
+            assert.equal(file.path, 'docs/tics-release-smoke.md');
+            const candidate = file.candidates[0];
+            assert.equal(candidate.rule, 'release-smoke');
+            assert.equal(candidate.original, 'world-class');
+            assert.equal(Buffer.from(file.source).subarray(candidate.range.start_byte, candidate.range.end_byte).toString(), candidate.original);
+          }
           JS
       - uses: actions/upload-artifact@v4
         with:
