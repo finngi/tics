@@ -20,11 +20,16 @@ fn tics_with_stdin(args: &[&str], stdin: &str) -> Result<Output> {
         .stderr(Stdio::piped())
         .spawn()
         .context("spawning tics")?;
-    child
+    let write = child
         .stdin
         .take()
         .context("stdin pipe")?
-        .write_all(stdin.as_bytes())?;
+        .write_all(stdin.as_bytes());
+    if let Err(error) = write
+        && error.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(error).context("writing tics stdin");
+    }
     child.wait_with_output().context("waiting for tics")
 }
 
